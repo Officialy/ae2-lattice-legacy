@@ -35,6 +35,8 @@ public final class GraphRenderer {
         zoom=1;panX=12;panY=64;dragging=false;hovered=null;hoveredIndex=-1;selected=-1;
         current=null;needFit=true;FLOW.reset();layoutSource=null;cachedLayout=null;
     }
+    static void configure(boolean enabled){animations=enabled;}
+    private static void toggleAnimation(){animations=!animations;ClientSettings.setAnimations(animations);}
     private static void message(String s){notice=s;noticeUntil=System.nanoTime()+3000000000L;}
     private static Snapshot.Node target(){
         return hovered!=null?hovered:current!=null && selected>=0 && selected<current.nodes.size()?current.nodes.get(selected):null;
@@ -59,7 +61,7 @@ public final class GraphRenderer {
         if(key==Keyboard.KEY_R){recipe(false);return true;}
         if(key==Keyboard.KEY_U){recipe(true);return true;}
         if(key==Keyboard.KEY_F){searching=true;return true;}
-        if(key==Keyboard.KEY_A){animations=!animations;return true;}
+        if(key==Keyboard.KEY_A){toggleAnimation();return true;}
         if(key>=Keyboard.KEY_1 && key<=Keyboard.KEY_9){
             Snapshot.Node n=target();int i=key-Keyboard.KEY_1;
             if(n!=null && i<n.externalDependencies.length)ClientProxy.page(n.externalDependencies[i]/Snapshot.PAGE_SIZE);
@@ -84,7 +86,7 @@ public final class GraphRenderer {
         int y=mc.currentScreen.height-Mouse.getEventY()*mc.currentScreen.height/mc.displayHeight-1;
         int wheel=Mouse.getEventDWheel();
         if(wheel!=0){
-            float next=Math.max(.30f,Math.min(2.5f,zoom*(wheel>0?1.12f:1/1.12f)));
+            float next=Math.max(.12f,Math.min(2.5f,zoom*(wheel>0?1.12f:1/1.12f)));
             panX=x-(x-panX)*next/zoom;panY=y-(y-panY)*next/zoom;zoom=next;
         }
         if(Mouse.getEventButton()==1 && Mouse.getEventButtonState() && hovered!=null && hovered.machine!=null)
@@ -95,7 +97,7 @@ public final class GraphRenderer {
                     if(x>=4 && x<48){ClientProxy.toggle();return;}
                     if(x>=52 && x<88){needFit=true;return;}
                     if(x>=92 && x<142){searching=!searching;return;}
-                    if(x>=146 && x<200){animations=!animations;return;}
+                    if(x>=146 && x<200){toggleAnimation();return;}
                 }
                 if(y>=23 && y<=37 && current!=null){
                     if(x>=4 && x<34){ClientProxy.page(current.page-1);return;}
@@ -153,7 +155,9 @@ public final class GraphRenderer {
     public static void draw(int w,int h,int mx,int my,Snapshot data){
         Minecraft mc=Minecraft.getMinecraft();FontRenderer f=mc.fontRenderer;
         Gui.drawRect(0,0,w,h,0xFF111923);
+        if(current!=null && data!=null && (current.page!=data.page || !Objects.equals(current.cpu,data.cpu) || data.elapsed<current.elapsed))selected=-1;
         current=data;hovered=null;hoveredIndex=-1;
+        if(data==null || selected>=data.nodes.size())selected=-1;
         panelWidth=w>=440 && selected>=0?Math.min(180,w/3):0;
         int graphW=w-panelWidth;
         long now=System.nanoTime();FLOW.accept(data,now);
@@ -254,7 +258,7 @@ public final class GraphRenderer {
         if(hovered!=null && hovered.machine!=null){
             Snapshot.Machine m=hovered.machine;
             List<String> lines=Arrays.asList(hovered.route.isEmpty()?"Candidate machine":hovered.route,
-                "Dim "+m.dim+" / "+m.x+", "+m.y+", "+m.z,"Energy: "+m.energy+" / "+m.capacity+" EU",
+                "Dim "+m.dim+" / "+m.x+", "+m.y+", "+m.z,m.capacity<0?"Energy: not applicable":"Energy: "+m.energy+" / "+m.capacity+" EU",
                 "Authorized sampled hatches: "+m.hatches,
                 "Items: "+(m.inventory.isEmpty()?"Unavailable / empty":m.inventory),
                 "Fluids: "+(m.fluids.isEmpty()?"Unavailable / empty":m.fluids),"Right-click: highlight for 10s");

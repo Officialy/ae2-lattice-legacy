@@ -8,6 +8,10 @@ import appeng.api.util.NamedDimensionalCoord;
 import appeng.helpers.IInterfaceHost;
 import appeng.me.helpers.IGridProxyable;
 import appeng.util.Platform;
+import appeng.tile.crafting.TileMolecularAssembler;
+import cpw.mods.fml.common.Loader;
+import net.minecraft.tileentity.TileEntityFurnace;
+import dev.ae2lattice.net.Snapshot;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.World;
@@ -21,8 +25,8 @@ final class MachineResolver {
         int tiles=128,nodes=128,grids=8;
     }
     static final class Result {
-        final GregTechProbe.Reading reading; final String route;
-        Result(GregTechProbe.Reading reading,String route){this.reading=reading;this.route=route;}
+        final MachineReading reading; final String route;
+        Result(MachineReading reading,String route){this.reading=reading;this.route=route;}
     }
     private static boolean allowed(IGrid grid,EntityPlayerMP player){
         if(grid==null)return false;
@@ -46,7 +50,7 @@ final class MachineResolver {
             for(NamedDimensionalCoord pos:dispatch.destinations){
                 TileEntity tile=loaded(pos,budget);
                 if(tile==null){partial=true;continue;}
-                if(GregTechProbe.isMachine(tile)){candidates.add(tile);continue;}
+                if(isMachine(tile)){candidates.add(tile);continue;}
                 boolean found=false;
                 for(IInterfaceHost host:interfaces(tile)){
                     IGrid grid=grid(host);
@@ -59,14 +63,41 @@ final class MachineResolver {
             }
         }else if(provider!=null){
             TileEntity tile=loaded(provider,budget);
-            if(tile!=null && GregTechProbe.isMachine(tile))candidates.add(tile);
+            if(tile!=null && isMachine(tile))candidates.add(tile);
             else if(tile!=null)adjacent(tile,dispatch==null?0:dispatch.targetMask,budget,candidates);
         }
         if(candidates.size()!=1 || partial || budget.tiles<0 || budget.nodes<0 || budget.grids<0)
             return null;
-        GregTechProbe.Reading reading=GregTechProbe.read(candidates.iterator().next(),player);
+        MachineReading reading=read(candidates.iterator().next(),player,exact && !subnet);
         if(reading==null)return null;
         return new Result(reading,subnet?"Authorized subnet candidate":exact?"Observed receiving tile":"Provider candidate");
+    }
+    private static boolean isMachine(TileEntity tile){
+        return tile instanceof TileMolecularAssembler || tile instanceof TileEntityFurnace ||
+            (Loader.isModLoaded("gregtech") && GregTechProbe.isMachine(tile));
+    }
+    private static MachineReading read(TileEntity tile,EntityPlayerMP player,boolean observedDirect){
+        if(tile instanceof TileMolecularAssembler){
+            TileMolecularAssembler assembler=(TileMolecularAssembler)tile;
+            try{if(!allowed(assembler.getProxy().getGrid(),player))return null;}
+            catch(Exception ex){return null;}
+            int progress=Math.max(0,Math.min(100,assembler.getCraftingProgress()));
+            return new MachineReading(!assembler.isPowered()?"No power":progress>0?"Crafting":"Idle",progress,100,
+                basic(tile));
+        }
+        if(tile instanceof TileEntityFurnace){
+            // Vanilla has no owner identity; only show an observed, nearby and usable furnace.
+            if(!observedDirect || tile.getWorldObj()!=player.worldObj)return null;
+            TileEntityFurnace furnace=(TileEntityFurnace)tile;
+            if(!furnace.isUseableByPlayer(player))return null;
+            int progress=Math.max(0,Math.min(200,furnace.furnaceCookTime));
+            return new MachineReading(furnace.isBurning()?"Burning":"Not burning",progress,200,basic(tile));
+        }
+        return Loader.isModLoaded("gregtech")?GregTechProbe.read(tile,player):null;
+    }
+    private static Snapshot.Machine basic(TileEntity tile){
+        // No inventory contents for basic probes; EU is not an applicable measurement.
+        return new Snapshot.Machine(tile.getWorldObj().provider.dimensionId,tile.xCoord,tile.yCoord,tile.zCoord,-1,-1,"","",0);
     }
     private static List<IInterfaceHost> interfaces(TileEntity tile){
         List<IInterfaceHost> result=new ArrayList<>();
@@ -89,7 +120,7 @@ final class MachineResolver {
             int x=tile.xCoord+d.offsetX,y=tile.yCoord+d.offsetY,z=tile.zCoord+d.offsetZ;
             if(!w.blockExists(x,y,z))continue;
             TileEntity target=w.getTileEntity(x,y,z);
-            if(GregTechProbe.isMachine(target))candidates.add(target);
+            if(isMachine(target))candidates.add(target);
         }
     }
     private static void walk(IGrid grid,EntityPlayerMP player,Budget budget,Set<IGrid> visited,
@@ -105,7 +136,7 @@ final class MachineResolver {
                     appeng.api.util.DimensionalCoord c=((IGridProxyable)host).getLocation();
                     if(c!=null){
                         TileEntity tile=loaded(new NamedDimensionalCoord(c,""),budget);
-                        if(GregTechProbe.isMachine(tile))candidates.add(tile);
+                        if(isMachine(tile))candidates.add(tile);
                     }
                 }catch(RuntimeException ignored){}
             }
@@ -122,7 +153,7 @@ final class MachineResolver {
                 if(!w.blockExists(x,y,z))continue;
                 TileEntity target=w.getTileEntity(x,y,z);
                 if(target==null)continue;
-                if(GregTechProbe.isMachine(target))candidates.add(target);
+                if(isMachine(target))candidates.add(target);
                 else for(IInterfaceHost next:interfaces(target)){
                     IGrid other=grid(next);
                     if(other!=grid)walk(other,player,budget,visited,candidates,depth+1);

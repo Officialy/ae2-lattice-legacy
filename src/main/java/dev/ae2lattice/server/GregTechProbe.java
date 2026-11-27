@@ -15,15 +15,8 @@ import net.minecraftforge.fluids.FluidTankInfo;
 
 /** Only machine owners receive optional machine telemetry. No mutation or chunk loading. */
 final class GregTechProbe {
-    static final class Reading {
-        final String state; final int progress,max;
-        final Snapshot.Machine machine;
-        Reading(String state,int progress,int max,Snapshot.Machine machine){
-            this.state=state;this.progress=progress;this.max=max;this.machine=machine;
-        }
-    }
     static boolean isMachine(TileEntity tile){return tile instanceof BaseMetaTileEntity;}
-    static Reading read(TileEntity tile,EntityPlayerMP player) {
+    static MachineReading read(TileEntity tile,EntityPlayerMP player) {
         if(!(tile instanceof BaseMetaTileEntity)) return null;
         BaseMetaTileEntity gt=(BaseMetaTileEntity)tile;
         if(!authorized(gt,player))return null;
@@ -49,7 +42,7 @@ final class GregTechProbe {
         tile=gt;
         Snapshot.Machine machine=new Snapshot.Machine(tile.getWorldObj().provider.dimensionId,tile.xCoord,tile.yCoord,tile.zCoord,
             Math.max(0,gt.getStoredEU()),Math.max(0,gt.getEUCapacity()),items.toString(),fluids.toString(),hatches.size());
-        return new Reading(!gt.isAllowedToWork()?"Disabled":gt.isActive()?"Running":"Idle",
+        return new MachineReading(!gt.isAllowedToWork()?"Disabled":gt.isActive()?"Running":"Idle",
             Math.max(0,gt.getProgress()),Math.max(0,gt.getMaxProgress()),machine);
     }
     private static boolean authorized(BaseMetaTileEntity tile,EntityPlayerMP player){

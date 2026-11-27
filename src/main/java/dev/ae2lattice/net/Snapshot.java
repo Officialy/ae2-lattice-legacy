@@ -9,7 +9,7 @@ public final class Snapshot {
     public static final int PAGE_SIZE = 12, MAX_TRACKED = 2048;
     public static final int MAX_PAGE = (MAX_TRACKED-1)/PAGE_SIZE;
     public static final int MAX_BYTES = 24576;
-    public static final int MAX_NODES = 96;
+    public static final int MAX_NODES = PAGE_SIZE;
     public static final int MAX_EDGES = 12;
     public final int window, nonce, page, totalNodes;
     public final String cpu, output, status;
@@ -87,7 +87,7 @@ public final class Snapshot {
         out.writeUTF(value.substring(0, Math.min(value.length(), 64)));
     }
     public byte[] encode() throws IOException {
-        int count = Math.min(nodes.size(), MAX_NODES);
+        int count = Math.min(Math.min(nodes.size(), MAX_NODES),Math.max(0,totalNodes-page*PAGE_SIZE));
         while (true) {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(bytes);
@@ -132,7 +132,7 @@ public final class Snapshot {
         long elapsed=in.readLong(), total=in.readLong(), remaining=in.readLong();
         boolean truncated=in.readBoolean();
         int page=in.readUnsignedShort(),totalNodes=in.readUnsignedShort(),count=in.readUnsignedShort();
-        if(totalNodes>MAX_TRACKED || page>MAX_PAGE || page!=clampPage(page,totalNodes) || count>totalNodes)throw new IOException("Invalid page");
+        if(totalNodes>MAX_TRACKED || page>MAX_PAGE || page!=clampPage(page,totalNodes) || count>Math.max(0,totalNodes-page*PAGE_SIZE))throw new IOException("Invalid page");
         if(count>MAX_NODES) throw new IOException("Too many nodes");
         List<Node> nodes=new ArrayList<>();
         for(int i=0;i<count;i++){

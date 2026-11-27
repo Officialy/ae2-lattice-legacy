@@ -19,6 +19,7 @@ public final class JobTrack {
     private static final Map<CraftingCPUCluster, Finished> FINISHED = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, String> OUTPUTS = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Map<IAEStack<?>,Long>> RETURNS=new WeakHashMap<>();
+    private static final Map<CraftingCPUCluster,Topology> TOPOLOGY=new WeakHashMap<>();
     private JobTrack() {}
     private static IAEStack<?> key(IAEStack<?> stack){
         IAEStack<?> copy=stack.copy();copy.setStackSize(1);return copy;
@@ -106,16 +107,32 @@ public final class JobTrack {
     public static synchronized void remember(CraftingCPUCluster cpu, ICraftingPatternDetails pattern) {
         FINISHED.remove(cpu);
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
-        if (set.size() < LIMIT) set.add(pattern);
+        if (set.size() < LIMIT && set.add(pattern)) TOPOLOGY.remove(cpu);
     }
-    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); RETURNS.remove(cpu); }
-    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); RETURNS.clear(); }
+    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); RETURNS.remove(cpu); TOPOLOGY.remove(cpu); }
+    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); RETURNS.clear(); TOPOLOGY.clear(); }
     public static synchronized List<ICraftingPatternDetails> patterns(CraftingCPUCluster cpu) {
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         for (ICraftingPatternDetails p : ((CpuAccessor)(Object)cpu).lattice$getTasks().keySet()) {
             if (set.size() >= LIMIT) break;
-            set.add(p);
+            if(set.add(p))TOPOLOGY.remove(cpu);
         }
         return new ArrayList<>(set);
+    }
+    static final class Topology {
+        final List<ICraftingPatternDetails> patterns;
+        final Map<IAEStack<?>,List<Integer>> producers=new HashMap<>();
+        Topology(List<ICraftingPatternDetails> patterns){
+            this.patterns=patterns;
+            for(int i=0;i<patterns.size();i++)
+                for(IAEStack<?> out:patterns.get(i).getCondensedAEOutputs())
+                    if(out!=null)producers.computeIfAbsent(key(out),k->new ArrayList<>()).add(i);
+        }
+    }
+    static synchronized Topology topology(CraftingCPUCluster cpu){
+        // Restored jobs may have tasks not observed through the add hook.
+        Topology existing=TOPOLOGY.get(cpu);
+        if(existing!=null)return existing;
+        Topology value=new Topology(patterns(cpu));TOPOLOGY.put(cpu,value);return value;
     }
 }

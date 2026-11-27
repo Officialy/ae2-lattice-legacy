@@ -29,16 +29,13 @@ final class SnapshotBuilder {
                 done.elapsed,done.total,done.remaining,false,Collections.emptyList());
             return new Snapshot(window,nonce,cpu.getName(),"","Idle",0,0,0,false,Collections.emptyList());
         }
-        List<ICraftingPatternDetails> patterns=JobTrack.patterns(cpu);
+        JobTrack.Topology topology=JobTrack.topology(cpu);
+        List<ICraftingPatternDetails> patterns=topology.patterns;
         Map<ICraftingPatternDetails,CraftingCPUCluster.TaskProgress> tasks=((CpuAccessor)(Object)cpu).lattice$getTasks();
         boolean truncated=patterns.size()>=Snapshot.MAX_TRACKED || tasks.size()>patterns.size();
         int count=patterns.size(),page=Snapshot.clampPage(requestedPage,count);
         int start=page*Snapshot.PAGE_SIZE,end=Math.min(count,start+Snapshot.PAGE_SIZE);
-        Map<IAEStack<?>,List<Integer>> producers=new HashMap<>();
-        for(int i=0;i<count;i++) {
-            for(IAEStack<?> out:patterns.get(i).getCondensedAEOutputs()) if(out!=null)
-                producers.computeIfAbsent(key(out),k->new ArrayList<>()).add(i);
-        }
+        Map<IAEStack<?>,List<Integer>> producers=topology.producers;
         List<Snapshot.Node> nodes=new ArrayList<>();
         int probes=0;
         MachineResolver.Budget budget=new MachineResolver.Budget();
@@ -98,10 +95,10 @@ final class SnapshotBuilder {
                             if(candidates.size()==1)coord=candidates.get(0);
                         }
                     }
-                    if(Loader.isModLoaded("gregtech")){
+                    {
                         MachineResolver.Result resolved=MachineResolver.resolve(dispatch,coord,cpu.getGrid(),player,budget);
                         if(resolved!=null){
-                            GregTechProbe.Reading reading=resolved.reading;
+                            MachineReading reading=resolved.reading;
                             route=resolved.route;
                             provider+=" / "+reading.state;progress=reading.progress;max=reading.max;machine=reading.machine;
                         }

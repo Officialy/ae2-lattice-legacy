@@ -20,3 +20,5 @@
 - Protocol 4: bounded paged snapshots, cross-page dependencies, larger tracking cap and stale page rejection.
 - Optional NEI recipe/usage lookup for safely reconstructable item/fluid identities and actual AE2 pattern summaries.
 - Tree/Grid controls, page controls, fit, search, selected-step details and animation toggle.
+
+- Persist client view/animation preferences; cache server-side pattern topology; add basic AE2 assembler and nearby vanilla furnace progress probes.

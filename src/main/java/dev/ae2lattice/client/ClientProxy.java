@@ -23,6 +23,7 @@ public final class ClientProxy extends CommonProxy {
     private static boolean preferTree;
     private static Snapshot snapshot;
     @Override public void init(){
+        ClientSettings.load();preferTree=ClientSettings.tree();GraphRenderer.configure(ClientSettings.animations());
         FMLCommonHandler.instance().bus().register(this);
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new WorldHighlight());
@@ -39,7 +40,7 @@ public final class ClientProxy extends CommonProxy {
     public static void toggle(){
         if(!available || !(Minecraft.getMinecraft().currentScreen instanceof GuiCraftingCPU))return;
         screen=(GuiCraftingCPU)Minecraft.getMinecraft().currentScreen;
-        tree=!tree;preferTree=tree;page=0;nonce++;snapshot=null;GraphRenderer.reset();
+        tree=!tree;preferTree=tree;ClientSettings.setTree(tree);page=0;nonce++;snapshot=null;GraphRenderer.reset();
     }
     public static void page(int target){
         if(!active() || snapshot==null)return;
