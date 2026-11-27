@@ -1,6 +1,5 @@
-<img src="docs/icon.png" width="128" align="right">
-
-# Lattice for AE2
+<p align="center"><img src="docs/icon.png" width="96"></p>
+<h1 align="center">Lattice for AE2</h1>
 
 ![Lattice crafting tree](docs/tree.png)
 
