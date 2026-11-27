@@ -1,61 +1,57 @@
-param([string]$Out = "logo.png", [int]$Size = 512)
+# Draws the Lattice logo (32x32 pixel art, scaled up). Usage: logo.ps1 -Out icon.png [-Size 512]
+param([string]$Out = "icon.png", [int]$Size = 512)
 Add-Type -AssemblyName System.Drawing
-$S = $Size / 32          # one "pixel" of the 32x32 art
+$S = $Size / 32
 $bmp = New-Object Drawing.Bitmap $Size, $Size
-$g = [Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = 'AntiAlias'
+$gfx = [Drawing.Graphics]::FromImage($bmp)
 
-function C($hex, $a = 255) { $c = [Drawing.ColorTranslator]::FromHtml($hex); [Drawing.Color]::FromArgb($a, $c) }
-function P($x, $y, $col) { $b = New-Object Drawing.SolidBrush $col; $g.FillRectangle($b, [float]($x * $S), [float]($y * $S), [float]$S, [float]$S); $b.Dispose() }
-function DrawRect($x, $y, $w, $h, $col) { $b = New-Object Drawing.SolidBrush $col; $g.FillRectangle($b, [float]($x * $S), [float]($y * $S), [float]($w * $S), [float]($h * $S)); $b.Dispose() }
-
-# background: dark slate + soft purple (fluix) glow
-DrawRect 0 0 32 32 (C '#15131f')
-$path = New-Object Drawing.Drawing2D.GraphicsPath
-$path.AddEllipse([float](-0.2 * $Size), [float](-0.2 * $Size), [float](1.4 * $Size), [float](1.4 * $Size))
-$pg = New-Object Drawing.Drawing2D.PathGradientBrush $path
-$pg.CenterColor = C '#3b2a66'; $pg.SurroundColors = @((C '#15131f'))
-$g.FillRectangle($pg, 0, 0, $Size, $Size)
-# faint lattice dots
-for ($y = 1; $y -lt 32; $y += 3) { for ($x = 1; $x -lt 32; $x += 3) { P $x $y (C '#ffffff' 14) } }
-
-# lines (cyan, with a soft glow)
-$line = C '#45e6e6'; $glow = C '#45e6e6' 45
-function HLine($x0, $x1, $y) { for ($x = [Math]::Min($x0,$x1); $x -le [Math]::Max($x0,$x1); $x++) { P $x ($y-1) $glow; P $x ($y+1) $glow } ; for ($x = [Math]::Min($x0,$x1); $x -le [Math]::Max($x0,$x1); $x++) { P $x $y $line } }
-function VLine($x, $y0, $y1) { for ($y = [Math]::Min($y0,$y1); $y -le [Math]::Max($y0,$y1); $y++) { P ($x-1) $y $glow; P ($x+1) $y $glow }; for ($y = [Math]::Min($y0,$y1); $y -le [Math]::Max($y0,$y1); $y++) { P $x $y $line } }
-function Edge($x0, $y0, $lane, $x1, $y1) { HLine $x0 $lane $y0; VLine $lane $y0 $y1; HLine $lane $x1 $y1 }
-
-Edge 9 5 10 11 8      # L0 -> M0
-Edge 9 15 10 11 10    # L1 -> M0
-Edge 9 26 10 11 21    # L2 -> M1
-Edge 19 9 21 22 14    # M0 -> F
-Edge 19 21 21 22 16   # M1 -> F
-
-# card: 7x7, black outline, Minecraft bevel, 3x3 "item" in the middle
-function Card($x, $y, $item, $shade) {
-    DrawRect $x $y 7 7 (C '#000000')
-    DrawRect ($x+1) ($y+1) 5 5 (C '#c6c6c6')
-    DrawRect ($x+1) ($y+1) 5 1 (C '#ffffff'); DrawRect ($x+1) ($y+1) 1 5 (C '#ffffff')
-    DrawRect ($x+1) ($y+5) 5 1 (C '#555555'); DrawRect ($x+5) ($y+1) 1 5 (C '#555555')
-    P ($x+5) ($y+1) (C '#c6c6c6'); P ($x+1) ($y+5) (C '#c6c6c6')
-    DrawRect ($x+2) ($y+2) 3 3 (C $item)
-    P ($x+2) ($y+2) (C '#ffffff' 170)
-    DrawRect ($x+3) ($y+4) 2 1 (C $shade); P ($x+4) ($y+3) (C $shade)
+function Col($hex, $a = 255) { [Drawing.Color]::FromArgb($a, [Drawing.ColorTranslator]::FromHtml($hex)) }
+function Box($x, $y, $w, $h, $col) {
+    $b = New-Object Drawing.SolidBrush $col
+    $gfx.FillRectangle($b, [float]($x * $S), [float]($y * $S), [float]($w * $S), [float]($h * $S)); $b.Dispose()
 }
-Card 2 2  '#e0a050' '#9a5f22'   # copper-ish
-Card 2 12 '#d8d8e0' '#8a8a96'   # iron-ish
-Card 2 23 '#e04545' '#8e1e1e'   # redstone-ish
-Card 12 6  '#9be35a' '#4f8f22'
-Card 12 18 '#5aa0ff' '#2a5cb0'
-# final card, slightly highlighted (purple fluix)
-Card 23 12 '#b57cff' '#6a3fb0'
 
-# travelling items (bright dots with halo)
-function Dot($x, $y) { foreach ($d in @(@(-1,0),@(1,0),@(0,-1),@(0,1))) { P ($x+$d[0]) ($y+$d[1]) (C '#bfffff' 110) }; P $x $y (C '#ffffff') }
-Dot 10 7
-Dot 10 23
-Dot 21 18
+# background + soft fluix glow behind the output card
+Box 0 0 32 32 (Col '#15131f')
+$gp = New-Object Drawing.Drawing2D.GraphicsPath
+$gp.AddEllipse([float](-0.25 * $Size), [float](-0.25 * $Size), [float](1.5 * $Size), [float](1.5 * $Size))
+$pg = New-Object Drawing.Drawing2D.PathGradientBrush $gp
+$pg.CenterPoint = New-Object Drawing.PointF ([float](0.6 * $Size)), ([float](0.5 * $Size))
+$pg.CenterColor = Col '#3d2b6b'; $pg.SurroundColors = @((Col '#15131f'))
+$gfx.FillRectangle($pg, 0, 0, $Size, $Size)
+for ($y = 2; $y -le 29; $y += 3) { for ($x = 2; $x -le 29; $x += 3) { Box $x $y 1 1 (Col '#ffffff' 12) } }
 
-$g.Dispose()
+# lines: 2px cyan with a 1px glow, drawn as rectangles (x0,y0,x1,y1 inclusive)
+$flat = @(10,5,15,6,  14,5,15,13,  14,12,19,13,      # top input
+          10,15,19,16,                               # middle input
+          10,25,15,26, 14,18,15,26, 14,18,19,19)     # bottom input (mirror)
+$segs = for ($i = 0; $i -lt $flat.Count; $i += 4) { ,@($flat[$i], $flat[$i+1], $flat[$i+2], $flat[$i+3]) }
+# foreach ($sg in $segs) { Box ($sg[0] - 1) ($sg[1] - 1) ($sg[2] - $sg[0] + 3) ($sg[3] - $sg[1] + 3) (Col '#45e6e6' 40) }
+foreach ($sg in $segs) { Box $sg[0] $sg[1] ($sg[2] - $sg[0] + 1) ($sg[3] - $sg[1] + 1) (Col '#45e6e6') }
+
+# items travelling along the lines
+foreach ($d in @(@(14, 8), @(14, 22), @(16, 15))) {
+    Box ($d[0] - 1) $d[1] 4 2 (Col '#d0ffff' 120); Box $d[0] ($d[1] - 1) 2 4 (Col '#d0ffff' 120)
+    Box $d[0] $d[1] 2 2 (Col '#ffffff')
+}
+
+# card: n x n, black outline, Minecraft bevel, item in the middle
+function Card($x, $y, $n, $item, $shade) {
+    Box $x $y $n $n (Col '#000000')
+    $i = $n - 2
+    Box ($x + 1) ($y + 1) $i $i (Col '#c6c6c6')
+    Box ($x + 1) ($y + 1) ($i - 1) 1 (Col '#ffffff'); Box ($x + 1) ($y + 1) 1 ($i - 1) (Col '#ffffff')
+    Box ($x + 2) ($y + $n - 2) ($i - 1) 1 (Col '#555555'); Box ($x + $n - 2) ($y + 2) 1 ($i - 1) (Col '#555555')
+    $k = $n - 4
+    Box ($x + 2) ($y + 2) $k $k (Col $item)
+    Box ($x + 2) ($y + 2) 1 1 (Col '#ffffff' 180)
+    Box ($x + 3) ($y + $n - 3) ($k - 1) 1 (Col $shade); Box ($x + $n - 3) ($y + 3) 1 ($k - 1) (Col $shade)
+}
+Card 2 2  8 '#e0a050' '#9a5f22'
+Card 2 12 8 '#d8d8e0' '#8a8a96'
+Card 2 22 8 '#e04545' '#8e1e1e'
+Card 20 11 10 '#b57cff' '#6a3fb0'
+
+$gfx.Dispose()
 $bmp.Save($Out, [Drawing.Imaging.ImageFormat]::Png)
 $bmp.Dispose()
