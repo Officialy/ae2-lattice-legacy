@@ -2,6 +2,8 @@
 
 # Lattice for AE2
 
+![Lattice crafting tree](docs/tree.png)
+
 A live, animated **crafting tree** for Applied Energistics 2 crafting CPUs.
 
 AE2's crafting status is a flat grid of numbers. Lattice shows the same job as a tree: every step, how it
@@ -24,6 +26,8 @@ connects, which machine is working on it, and what that machine is actually doin
 - **Item animations** along the lines when AE2 sends ingredients to a machine.
 - **Job finished**: a short celebration and a summary (time, steps, machines used).
 - AE2-style CPU list with the same tooltips.
+
+![Machine panel](docs/machine-panel.png)
 
 ## Read-only
 
