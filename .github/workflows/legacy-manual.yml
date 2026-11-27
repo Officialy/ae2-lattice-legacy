@@ -1,0 +1,42 @@
+name: Manual legacy test build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: legacy-ci-refs/heads/backport/1.7.10
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: backport/1.7.10
+          fetch-depth: 0
+      - name: Show source revision
+        run: git log -1 --oneline
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ae2-lattice-legacy-build
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+            !build/libs/*-dev.jar
+            !build/libs/*-javadoc.jar
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-reports
+          path: build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7
