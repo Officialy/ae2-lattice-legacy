@@ -29,3 +29,6 @@ build.log
 run-data
 
 publish.log
+release-notes.md
+cf-meta.json
+cf-response.txt

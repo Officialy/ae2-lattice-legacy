@@ -102,8 +102,8 @@ modrinth {
     uploadFile = jar
     gameVersions = [minecraft_version]
     loaders = ['forge']
-    changelog = file('CHANGELOG.md').exists() ? file('CHANGELOG.md').text : ''
-    syncBodyFrom = file('README.md').text
+    // release-notes.md is written by the release workflow (this version's section of CHANGELOG.md)
+    changelog = file('release-notes.md').exists() ? file('release-notes.md').text : ''
     dependencies {
         required.project 'ae2'
         optional.project 'emi'
