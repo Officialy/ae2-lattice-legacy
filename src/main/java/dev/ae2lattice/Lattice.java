@@ -1,51 +1,33 @@
 package dev.ae2lattice;
 
-import com.mojang.logging.LogUtils;
+import cpw.mods.fml.common.FMLCommonHandler;
+import cpw.mods.fml.common.Mod;
+import cpw.mods.fml.common.SidedProxy;
+import cpw.mods.fml.common.event.FMLInitializationEvent;
+import cpw.mods.fml.common.network.NetworkCheckHandler;
+import cpw.mods.fml.relauncher.Side;
 import dev.ae2lattice.net.LatticeNetwork;
 import dev.ae2lattice.server.ServerHooks;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.fml.DistExecutor;
-import net.minecraftforge.fml.ModLoadingContext;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.config.ModConfig;
-import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
-import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
-import org.slf4j.Logger;
+import java.util.Map;
 
-@Mod(Lattice.MOD_ID)
-public class Lattice {
-    public static final String MOD_ID = "ae2lattice";
-    public static final Logger LOG = LogUtils.getLogger();
+@Mod(modid = Lattice.ID, name = "AE2 Lattice Legacy", version = Tags.VERSION,
+    acceptedMinecraftVersions = "[1.7.10]", acceptableRemoteVersions = "*",
+    dependencies = "required-after:appliedenergistics2;after:gregtech")
+public final class Lattice {
+    public static final String ID = "ae2lattice";
+    @SidedProxy(clientSide = "dev.ae2lattice.client.ClientProxy", serverSide = "dev.ae2lattice.CommonProxy")
+    public static CommonProxy proxy;
 
-    public Lattice() {
-        ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, LatticeConfig.CLIENT_SPEC);
-        ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, LatticeConfig.SERVER_SPEC);
-        LatticeNetwork.register();
-        MinecraftForge.EVENT_BUS.register(ServerHooks.class);
-        FMLJavaModLoadingContext.get().getModEventBus().addListener(this::commonSetup);
-        DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> dev.ae2lattice.client.ClientInit::init);
+    // Optional on BOTH sides; the application protocol is checked independently.
+    @NetworkCheckHandler
+    public boolean checkRemote(Map<String, String> remote, Side side) {
+        return true;
     }
 
-    /** Load the hooked AE2 classes now, so an incompatible AE2 version fails loudly at startup, not mid-craft. */
-    private void commonSetup(FMLCommonSetupEvent e) {
-        String[] hooked = {
-                "appeng.crafting.execution.CraftingCpuLogic",
-                "appeng.crafting.execution.ExecutingCraftingJob",
-                "appeng.crafting.execution.ExecutingCraftingJob$TaskProgress",
-                "appeng.menu.me.crafting.CraftingCPUMenu",
-                "appeng.helpers.patternprovider.PatternProviderLogic",
-                "appeng.me.service.CraftingService",
-        };
-        int ok = 0;
-        for (var name : hooked) {
-            try {
-                Class.forName(name, true, Lattice.class.getClassLoader());
-                ok++;
-            } catch (Throwable t) {
-                LOG.error("Lattice: could not hook {} - the tree view will not work with this AE2 version", name, t);
-            }
-        }
-        LOG.info("Lattice: {}/{} AE2 hooks applied", ok, hooked.length);
+    @Mod.EventHandler
+    public void init(FMLInitializationEvent event) {
+        LatticeNetwork.init();
+        FMLCommonHandler.instance().bus().register(new ServerHooks());
+        proxy.init();
     }
 }

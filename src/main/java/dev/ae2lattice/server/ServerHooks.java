@@ -1,114 +1,57 @@
 package dev.ae2lattice.server;
-
-import java.lang.ref.WeakReference;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-
+import appeng.api.config.SecurityPermissions;
+import appeng.api.networking.IGrid;
+import appeng.api.networking.security.ISecurityGrid;
+import appeng.container.implementations.ContainerCraftingCPU;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
-import appeng.menu.me.crafting.CraftingCPUMenu;
-import dev.ae2lattice.Lattice;
-import dev.ae2lattice.LatticeConfig;
-import dev.ae2lattice.mixin.CraftingCPUMenuAccessor;
+import cpw.mods.fml.common.eventhandler.SubscribeEvent;
+import cpw.mods.fml.common.gameevent.PlayerEvent;
+import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.ae2lattice.net.LatticeNetwork;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStoppedEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.server.ServerLifecycleHooks;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.entity.player.EntityPlayerMP;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public final class ServerHooks {
-    private static long tick;
-
-    /** Players that currently have the tree view open. */
-    private static final Map<UUID, Subscription> SUBS = new HashMap<>();
-
-    static final class Subscription {
-        final String playerName;
-        String lastLogged = "";
-
-        Subscription(String playerName) {
-            this.playerName = playerName;
-        }
-
-        /** Logs only when the state changes, so this never spams. */
-        void logState(String state) {
-            if (!state.equals(lastLogged)) {
-                lastLogged = state;
-                Lattice.LOG.debug("Lattice: tree view for {}: {}", playerName, state);
-            }
-        }
-
-        WeakReference<CraftingCPUCluster> cpu = new WeakReference<>(null);
-        long jobUid;
-        int structureVersion = -1;
-        long eventSeq;
-        long lastEmptySentTick = Long.MIN_VALUE / 2;
+    private static final Logger LOG=LogManager.getLogger("AE2 Lattice");
+    private static final Map<EntityPlayerMP,LatticeNetwork.Request> QUEUE=new ConcurrentHashMap<>();
+    private final Map<EntityPlayerMP,Long> last=new WeakHashMap<>();
+    private long tick;
+    public static void enqueue(EntityPlayerMP player,LatticeNetwork.Request request) {
+        if(QUEUE.size()<512) QUEUE.putIfAbsent(player,request);
     }
-
-    public static long tick() {
-        return tick;
+    @SubscribeEvent public void logout(PlayerEvent.PlayerLoggedOutEvent event) {
+        QUEUE.remove(event.player); last.remove(event.player);
     }
-
-    public static void setSubscribed(ServerPlayer player, boolean on) {
-        if (on) {
-            SUBS.put(player.getUUID(), new Subscription(player.getGameProfile().getName()));
-            Lattice.LOG.debug("Lattice: {} opened the tree view (menu: {})", player.getGameProfile().getName(),
-                    player.containerMenu.getClass().getSimpleName());
-        } else {
-            SUBS.remove(player.getUUID());
-        }
-    }
-
-    @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent e) {
-        if (e.phase != TickEvent.Phase.END) return;
+    @SubscribeEvent public void tick(TickEvent.ServerTickEvent event) {
+        if(event.phase!=TickEvent.Phase.END) return;
         tick++;
-        if (SUBS.isEmpty()) return;
-        int interval;
-        try {
-            interval = LatticeConfig.UPDATE_INTERVAL_TICKS.get();
-        } catch (IllegalStateException notLoaded) {
-            interval = 4;
-        }
-        if (tick % interval != 0) return;
-
-        var server = ServerLifecycleHooks.getCurrentServer();
-        if (server == null) return;
-        var it = SUBS.entrySet().iterator();
-        while (it.hasNext()) {
-            var entry = it.next();
-            ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
-            if (player == null) {
-                it.remove();
-                continue;
-            }
-            if (!(player.containerMenu instanceof CraftingCPUMenu menu)) {
-                entry.getValue().logState("not in a crafting status menu ("
-                        + player.containerMenu.getClass().getSimpleName() + ")");
-                continue;
-            }
+        // Global cap; excess requests wait for the next server tick.
+        int budget=4;
+        for(Map.Entry<EntityPlayerMP,LatticeNetwork.Request> e:QUEUE.entrySet()){
+            if(budget<=0) break;
+            EntityPlayerMP p=e.getKey();
+            LatticeNetwork.Request req=e.getValue();
+            if(!QUEUE.remove(p,req)) continue;
+            Long previous=last.get(p);
+            if(previous!=null && tick-previous<10) continue;
+            last.put(p,tick);
+            if(p.isDead || !(p.openContainer instanceof ContainerCraftingCPU)
+                || p.openContainer.windowId!=req.window || !p.openContainer.canInteractWith(p)) continue;
+            ContainerCraftingCPU container=(ContainerCraftingCPU)p.openContainer;
+            CraftingCPUCluster cpu=container.getCpu();
+            if(cpu==null) continue;
+            IGrid grid=cpu.getGrid();
+            if(grid==null) continue;
+            ISecurityGrid security=grid.getCache(ISecurityGrid.class);
+            if(security==null || !security.hasPermission(p,SecurityPermissions.CRAFT)) continue;
+            budget--;
             try {
-                var cpu = ((CraftingCPUMenuAccessor) (Object) menu).ae2lattice$getCpu();
-                var data = SnapshotBuilder.build(cpu, entry.getValue());
-                if (data != null) LatticeNetwork.sendTo(player, data);
-            } catch (Throwable t) {
-                Lattice.LOG.warn("Lattice: failed to build snapshot", t);
-            }
+                LatticeNetwork.channel.sendTo(new LatticeNetwork.Response(
+                    SnapshotBuilder.build(cpu,p,req.window,req.nonce)),p);
+            } catch(Exception ex) { LOG.debug("Could not build crafting snapshot",ex); }
         }
     }
-
-    @SubscribeEvent
-    public static void onLogout(PlayerEvent.PlayerLoggedOutEvent e) {
-        SUBS.remove(e.getEntity().getUUID());
-    }
-
-    @SubscribeEvent
-    public static void onServerStopped(ServerStoppedEvent e) {
-        SUBS.clear();
-        LatticeTracker.clear();
-    }
-
-    private ServerHooks() {}
 }

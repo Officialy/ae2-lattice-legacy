@@ -1,81 +1,55 @@
 package dev.ae2lattice.net;
-
-import java.util.function.Supplier;
-
+import cpw.mods.fml.common.network.NetworkRegistry;
+import cpw.mods.fml.common.network.simpleimpl.*;
+import cpw.mods.fml.relauncher.Side;
 import dev.ae2lattice.Lattice;
 import dev.ae2lattice.server.ServerHooks;
-import net.minecraft.network.FriendlyByteBuf;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.fml.DistExecutor;
-import net.minecraftforge.network.NetworkDirection;
-import net.minecraftforge.network.NetworkEvent;
-import net.minecraftforge.network.NetworkRegistry;
-import net.minecraftforge.network.PacketDistributor;
-import net.minecraftforge.network.simple.SimpleChannel;
+import io.netty.buffer.ByteBuf;
+import java.io.IOException;
 
 public final class LatticeNetwork {
-    /** Bump whenever packet contents change, so mismatched client/server versions are caught on join. */
-    private static final String PROTOCOL = "9";
-
-    /** Optional on both sides: clients without Lattice can join servers with it and vice versa. */
-    public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
-            new ResourceLocation(Lattice.MOD_ID, "main"),
-            () -> PROTOCOL,
-            NetworkRegistry.acceptMissingOr(PROTOCOL),
-            NetworkRegistry.acceptMissingOr(PROTOCOL));
-
-    public static void register() {
-        CHANNEL.messageBuilder(SubscribePacket.class, 0, NetworkDirection.PLAY_TO_SERVER)
-                .encoder(SubscribePacket::write)
-                .decoder(SubscribePacket::read)
-                .consumerMainThread(SubscribePacket::handle)
-                .add();
-        CHANNEL.messageBuilder(SnapshotPacket.class, 1, NetworkDirection.PLAY_TO_CLIENT)
-                .encoder(SnapshotPacket::write)
-                .decoder(SnapshotPacket::read)
-                .consumerMainThread(SnapshotPacket::handle)
-                .add();
+    public static final String CHANNEL = "ae2lattice";
+    public static SimpleNetworkWrapper channel;
+    public static void init() {
+        channel=NetworkRegistry.INSTANCE.newSimpleChannel(CHANNEL);
+        channel.registerMessage(RequestHandler.class,Request.class,0,Side.SERVER);
+        channel.registerMessage(ResponseHandler.class,Response.class,1,Side.CLIENT);
     }
-
-    public static void sendTo(ServerPlayer player, SnapshotData data) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new SnapshotPacket(data));
-    }
-
-    // ---------------------------------------------------------------------------------------------
-
-    public record SubscribePacket(boolean subscribe) {
-        void write(FriendlyByteBuf b) {
-            b.writeBoolean(subscribe);
+    public static final class Request implements IMessage {
+        public int window, nonce;
+        public boolean valid;
+        public Request() {}
+        public Request(int window,int nonce) { this.window=window; this.nonce=nonce; valid=true; }
+        @Override public void fromBytes(ByteBuf b) {
+            if(b.readableBytes()!=9 || b.readUnsignedByte()!=Snapshot.PROTOCOL) return;
+            window=b.readInt(); nonce=b.readInt(); valid=true;
         }
-
-        static SubscribePacket read(FriendlyByteBuf b) {
-            return new SubscribePacket(b.readBoolean());
-        }
-
-        void handle(Supplier<NetworkEvent.Context> ctx) {
-            var player = ctx.get().getSender();
-            if (player != null) {
-                ServerHooks.setSubscribed(player, subscribe);
-            }
+        @Override public void toBytes(ByteBuf b) {
+            b.writeByte(Snapshot.PROTOCOL); b.writeInt(window); b.writeInt(nonce);
         }
     }
-
-    public record SnapshotPacket(SnapshotData data) {
-        void write(FriendlyByteBuf b) {
-            data.write(b);
-        }
-
-        static SnapshotPacket read(FriendlyByteBuf b) {
-            return new SnapshotPacket(SnapshotData.read(b));
-        }
-
-        void handle(Supplier<NetworkEvent.Context> ctx) {
-            DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
-                    () -> () -> dev.ae2lattice.client.ClientState.accept(data));
+    public static final class RequestHandler implements IMessageHandler<Request,IMessage> {
+        @Override public IMessage onMessage(Request message,MessageContext ctx) {
+            if(message.valid) ServerHooks.enqueue(ctx.getServerHandler().playerEntity,message);
+            return null;
         }
     }
-
-    private LatticeNetwork() {}
+    public static final class Response implements IMessage {
+        private byte[] data;
+        public Response() {}
+        public Response(Snapshot snapshot) throws IOException { data=snapshot.encode(); }
+        @Override public void fromBytes(ByteBuf b) {
+            int len=b.readableBytes();
+            if(len<=0 || len>Snapshot.MAX_BYTES) return;
+            data=new byte[len]; b.readBytes(data);
+        }
+        @Override public void toBytes(ByteBuf b) { if(data!=null) b.writeBytes(data); }
+    }
+    public static final class ResponseHandler implements IMessageHandler<Response,IMessage> {
+        @Override public IMessage onMessage(Response message,MessageContext ctx) {
+            if(message.data!=null) try { Lattice.proxy.receive(Snapshot.decode(message.data)); }
+            catch(IOException ignored) { /* malformed or incompatible snapshot */ }
+            return null;
+        }
+    }
 }
