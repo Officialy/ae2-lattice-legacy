@@ -5,7 +5,7 @@ import java.util.*;
 
 /** No object deserialization, NBT or coordinates supplied by clients. */
 public final class Snapshot {
-    public static final int PROTOCOL = 1;
+    public static final int PROTOCOL = 2;
     public static final int MAX_BYTES = 24576;
     public static final int MAX_NODES = 96;
     public static final int MAX_EDGES = 12;
@@ -21,13 +21,29 @@ public final class Snapshot {
         this.elapsed=elapsed; this.total=total; this.remaining=remaining; this.truncated=truncated;
         this.nodes=Collections.unmodifiableList(new ArrayList<>(nodes));
     }
+    /** Bounded, owner-authorized observation of a loaded controller/tile. */
+    public static final class Machine {
+        public final int dim,x,y,z;
+        public final long energy,capacity;
+        public final String inventory,fluids;
+        public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids){
+            this.dim=dim;this.x=x;this.y=y;this.z=z;this.energy=energy;this.capacity=capacity;
+            this.inventory=inventory;this.fluids=fluids;
+        }
+    }
     public static final class Node {
         public final String label, reason, provider;
         public final long runs, stored, active, pending;
         public final int progress, maxProgress, itemId, damage;
         public final int[] dependencies;
+        public final Machine machine;
         public Node(String label, String reason, String provider, long runs, long stored, long active, long pending,
                     int progress, int maxProgress, int itemId, int damage, int[] dependencies) {
+            this(label,reason,provider,runs,stored,active,pending,progress,maxProgress,itemId,damage,dependencies,null);
+        }
+        public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
+                    int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine){
+            this.machine=machine;
             this.label=label; this.reason=reason; this.provider=provider; this.runs=runs; this.stored=stored;
             this.active=active; this.pending=pending; this.progress=progress; this.maxProgress=maxProgress;
             this.itemId=itemId; this.damage=damage; this.dependencies=dependencies.clone();
@@ -51,6 +67,12 @@ public final class Snapshot {
                 string(out,n.label); string(out,n.reason); string(out,n.provider);
                 out.writeLong(n.runs); out.writeLong(n.stored); out.writeLong(n.active); out.writeLong(n.pending);
                 out.writeInt(n.progress); out.writeInt(n.maxProgress); out.writeInt(n.itemId); out.writeInt(n.damage);
+                out.writeBoolean(n.machine!=null);
+                if(n.machine!=null){
+                    Machine m=n.machine;
+                    out.writeInt(m.dim);out.writeInt(m.x);out.writeInt(m.y);out.writeInt(m.z);
+                    out.writeLong(m.energy);out.writeLong(m.capacity);string(out,m.inventory);string(out,m.fluids);
+                }
                 int edges=0;
                 for(int d:n.dependencies) if(d>=0 && d<count && d!=i && edges<MAX_EDGES) edges++;
                 out.writeByte(edges);
@@ -77,6 +99,9 @@ public final class Snapshot {
             String label=in.readUTF(), reason=in.readUTF(), provider=in.readUTF();
             long runs=in.readLong(), stored=in.readLong(), active=in.readLong(), pending=in.readLong();
             int progress=in.readInt(), max=in.readInt(), itemId=in.readInt(), damage=in.readInt();
+            Machine machine=null;
+            if(in.readBoolean())machine=new Machine(in.readInt(),in.readInt(),in.readInt(),in.readInt(),
+                in.readLong(),in.readLong(),in.readUTF(),in.readUTF());
             int edges=in.readUnsignedByte();
             if(edges>MAX_EDGES) throw new IOException("Too many edges");
             int[] deps=new int[edges];
@@ -84,7 +109,7 @@ public final class Snapshot {
                 deps[j]=in.readUnsignedShort();
                 if(deps[j]>=count || deps[j]==i) throw new IOException("Invalid edge");
             }
-            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps));
+            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine));
         }
         if(in.available()!=0) throw new IOException("Trailing snapshot bytes");
         return new Snapshot(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes);

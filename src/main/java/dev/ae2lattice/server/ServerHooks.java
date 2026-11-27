@@ -8,6 +8,8 @@ import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.ae2lattice.net.LatticeNetwork;
+import dev.ae2lattice.mixin.ContainerAccessor;
+import dev.ae2lattice.net.Snapshot;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -36,6 +38,7 @@ public final class ServerHooks {
             EntityPlayerMP p=e.getKey();
             LatticeNetwork.Request req=e.getValue();
             if(!QUEUE.remove(p,req)) continue;
+            budget--; // Charge invalid requests too.
             Long previous=last.get(p);
             if(previous!=null && tick-previous<10) continue;
             last.put(p,tick);
@@ -43,15 +46,14 @@ public final class ServerHooks {
                 || p.openContainer.windowId!=req.window || !p.openContainer.canInteractWith(p)) continue;
             ContainerCraftingCPU container=(ContainerCraftingCPU)p.openContainer;
             CraftingCPUCluster cpu=container.getCpu();
-            if(cpu==null) continue;
-            IGrid grid=cpu.getGrid();
-            if(grid==null) continue;
+            IGrid grid=((ContainerAccessor)(Object)container).lattice$getNetwork();
+            if(grid==null || (cpu!=null && cpu.getGrid()!=grid)) continue;
             ISecurityGrid security=grid.getCache(ISecurityGrid.class);
             if(security==null || !security.hasPermission(p,SecurityPermissions.CRAFT)) continue;
-            budget--;
             try {
-                LatticeNetwork.channel.sendTo(new LatticeNetwork.Response(
-                    SnapshotBuilder.build(cpu,p,req.window,req.nonce)),p);
+                Snapshot snapshot=cpu==null?new Snapshot(req.window,req.nonce,"","","No CPU selected",0,0,0,false,Collections.emptyList()):
+                    SnapshotBuilder.build(cpu,p,req.window,req.nonce);
+                LatticeNetwork.channel.sendTo(new LatticeNetwork.Response(snapshot),p);
             } catch(Exception ex) { LOG.debug("Could not build crafting snapshot",ex); }
         }
     }

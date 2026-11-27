@@ -23,6 +23,9 @@ final class SnapshotBuilder {
     static Snapshot build(CraftingCPUCluster cpu,EntityPlayerMP player,int window,int nonce){
         if(!cpu.isBusy()) {
             JobTrack.clear(cpu);
+            JobTrack.Finished done=JobTrack.finished(cpu);
+            if(done!=null)return new Snapshot(window,nonce,cpu.getName(),done.output,done.status,
+                done.elapsed,done.total,done.remaining,false,Collections.emptyList());
             return new Snapshot(window,nonce,cpu.getName(),"","Idle",0,0,0,false,Collections.emptyList());
         }
         List<ICraftingPatternDetails> patterns=JobTrack.patterns(cpu);
@@ -52,6 +55,7 @@ final class SnapshotBuilder {
             long stored=0,active=0,pending=0;
             String reason="",provider="";
             int progress=-1,max=-1,id=-1,damage=0;
+            Snapshot.Machine machine=null;
             if(out!=null){
                 stored=cpu.getStackAmount(out,CraftingItemList.STORAGE);
                 active=cpu.getStackAmount(out,CraftingItemList.ACTIVE);
@@ -78,14 +82,15 @@ final class SnapshotBuilder {
                         }
                     }
                     if(coord!=null && Loader.isModLoaded("gregtech")){
-                        GregTechProbe.Reading reading=probe(coord,player);
-                        if(reading!=null){provider+=" / "+reading.state; progress=reading.progress; max=reading.max;}
+                        GregTechProbe.Reading reading=probe(coord,player,dispatch==null?0:dispatch.targetMask);
+                        if(reading!=null){provider+=" / "+reading.state; progress=reading.progress; max=reading.max; machine=reading.machine;}
                     }
                 }
             }
-            nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges));
+            nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges,machine));
         }
         IAEStack<?> output=cpu.getFinalMultiOutput();
+        JobTrack.observeOutput(cpu,output);
         return new Snapshot(window,nonce,cpu.getName(),output==null?"":output.getDisplayName(),
             cpu.isSuspended()?"Suspended":"Crafting",cpu.getElapsedTime(),cpu.getStartItemCount(),
             cpu.getRemainingItemCount(),truncated,nodes);
@@ -96,18 +101,21 @@ final class SnapshotBuilder {
     private static IAEStack<?> first(IAEStack<?>[] stacks){
         for(IAEStack<?> s:stacks) if(s!=null)return s;return null;
     }
-    private static GregTechProbe.Reading probe(NamedDimensionalCoord c,EntityPlayerMP player){
+    private static GregTechProbe.Reading probe(NamedDimensionalCoord c,EntityPlayerMP player,int targetMask){
         World world=DimensionManager.getWorld(c.getDimension());
         if(world==null || !world.blockExists(c.x,c.y,c.z)) return null;
-        GregTechProbe.Reading found=null;
-        // Only adjacent loaded GT tiles; refuse ambiguous multi-machine surroundings.
+        TileEntity found=null;
+        // An actual provider's exposed faces are preferred. A fallback remains only a candidate.
         for(ForgeDirection d:ForgeDirection.VALID_DIRECTIONS){
+            if(targetMask!=0 && (targetMask & (1<<d.ordinal()))==0)continue;
             int x=c.x+d.offsetX,y=c.y+d.offsetY,z=c.z+d.offsetZ;
             if(!world.blockExists(x,y,z))continue;
             TileEntity tile=world.getTileEntity(x,y,z);
-            GregTechProbe.Reading reading=GregTechProbe.read(tile,player);
-            if(reading!=null){if(found!=null)return null;found=reading;}
+            if(GregTechProbe.isMachine(tile)){
+                if(found!=null)return null; // Count even non-owned machines when detecting ambiguity.
+                found=tile;
+            }
         }
-        return found;
+        return found==null?null:GregTechProbe.read(found,player);
     }
 }

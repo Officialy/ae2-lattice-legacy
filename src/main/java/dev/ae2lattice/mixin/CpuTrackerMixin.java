@@ -7,6 +7,7 @@ import net.minecraft.inventory.InventoryCrafting;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
 import dev.ae2lattice.server.JobTrack;
 import org.spongepowered.asm.mixin.Mixin;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -29,10 +30,16 @@ public abstract class CpuTrackerMixin {
         return accepted;
     }
     @Inject(method = "cancel", at = @At("HEAD"))
-    private void lattice$cancel(CallbackInfo ci) { JobTrack.clear((CraftingCPUCluster)(Object)this); }
-    @Inject(method = "completeJob", at = @At("RETURN"))
+    private void lattice$cancel(CallbackInfo ci) {
+        try { JobTrack.finish((CraftingCPUCluster)(Object)this,true); }
+        catch(RuntimeException ignored) { JobTrack.clear((CraftingCPUCluster)(Object)this); }
+    }
+    // This write is reached only after AE2's early-return guard, before counters reset.
+    @Inject(method = "completeJob", at = @At(value="FIELD",
+        target="Lappeng/me/cluster/implementations/CraftingCPUCluster;usedStorage:J",
+        opcode=Opcodes.PUTFIELD, shift=At.Shift.BEFORE))
     private void lattice$complete(CallbackInfo ci) {
-        CraftingCPUCluster cpu = (CraftingCPUCluster)(Object)this;
-        if (!cpu.isBusy()) JobTrack.clear(cpu);
+        try { JobTrack.finish((CraftingCPUCluster)(Object)this,false); }
+        catch(RuntimeException ignored) { JobTrack.clear((CraftingCPUCluster)(Object)this); }
     }
 }

@@ -5,6 +5,9 @@ import appeng.api.util.DimensionalCoord;
 import appeng.api.util.NamedDimensionalCoord;
 import appeng.me.helpers.IGridProxyable;
 import appeng.helpers.DualityInterface;
+import appeng.helpers.IInterfaceHost;
+import appeng.api.storage.data.IAEStack;
+import net.minecraftforge.common.util.ForgeDirection;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
 import dev.ae2lattice.mixin.CpuAccessor;
 import java.util.*;
@@ -13,11 +16,43 @@ public final class JobTrack {
     private static final int LIMIT = 256;
     private static final Map<CraftingCPUCluster, Set<ICraftingPatternDetails>> JOBS = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Map<ICraftingPatternDetails, Dispatch>> DISPATCHES = new WeakHashMap<>();
+    private static final Map<CraftingCPUCluster, Finished> FINISHED = new WeakHashMap<>();
+    private static final Map<CraftingCPUCluster, String> OUTPUTS = new WeakHashMap<>();
     private JobTrack() {}
+    static final class Finished {
+        final String output,status;
+        final long elapsed,total,remaining,at;
+        Finished(String output,String status,long elapsed,long total,long remaining){
+            this.output=output;this.status=status;this.elapsed=elapsed;this.total=total;this.remaining=remaining;
+            this.at=System.nanoTime();
+        }
+    }
+    static synchronized void observeOutput(CraftingCPUCluster cpu,IAEStack<?> output){
+        if(output!=null) OUTPUTS.put(cpu,output.getDisplayName());
+    }
+    public static synchronized void finish(CraftingCPUCluster cpu,boolean canceled){
+        if(!JOBS.containsKey(cpu) && !cpu.isBusy())return;
+        IAEStack<?> output=cpu.getFinalMultiOutput();
+        String name=OUTPUTS.get(cpu);
+        if(name==null && output!=null)name=output.getDisplayName();
+        FINISHED.put(cpu,new Finished(name==null?"Crafting job":name,canceled?"Canceled":"Completed",
+            cpu.getElapsedTime(),cpu.getStartItemCount(),canceled?cpu.getRemainingItemCount():0));
+        clear(cpu);
+    }
+    static synchronized Finished finished(CraftingCPUCluster cpu){
+        Finished value=FINISHED.get(cpu);
+        if(value!=null && System.nanoTime()-value.at>30L*60*1000000000L){
+            FINISHED.remove(cpu);return null;
+        }
+        return value;
+    }
     public static final class Dispatch {
         final NamedDimensionalCoord provider;
         final long count;
-        Dispatch(NamedDimensionalCoord provider,long count){this.provider=provider;this.count=count;}
+        final int targetMask;
+        Dispatch(NamedDimensionalCoord provider,long count,int targetMask){
+            this.provider=provider;this.count=count;this.targetMask=targetMask;
+        }
     }
 
     // Observe successful handoffs only; never retain a tile or crafting medium.
@@ -28,26 +63,34 @@ public final class JobTrack {
         Dispatch previous=map.get(pattern);
         long count=previous==null?1:previous.count==Long.MAX_VALUE?Long.MAX_VALUE:previous.count+1;
         NamedDimensionalCoord provider=null;
+        int targetMask=0;
         try {
             if(medium instanceof IGridProxyable){
                 DimensionalCoord loc=((IGridProxyable)medium).getLocation();
-                String name=medium instanceof DualityInterface?((DualityInterface)medium).getRawTermName():
-                    medium.getClass().getSimpleName();
-                if(loc!=null)provider=new NamedDimensionalCoord(loc,name);
+                // Do not call getRawTermName(): it may inspect neighboring tiles on every push.
+                if(loc!=null)provider=new NamedDimensionalCoord(loc,medium instanceof DualityInterface?
+                    "ME Interface":medium.getClass().getSimpleName());
+                if(medium instanceof DualityInterface){
+                    Object host=((DualityInterface)medium).getHost();
+                    if(host instanceof IInterfaceHost)
+                        for(ForgeDirection side:((IInterfaceHost)host).getTargets())
+                            if(side!=ForgeDirection.UNKNOWN)targetMask|=1<<side.ordinal();
+                }
             }
         } catch(RuntimeException ignored) { /* Optional metadata. */ }
-        map.put(pattern,new Dispatch(provider,count));
+        map.put(pattern,new Dispatch(provider,count,targetMask));
     }
     public static synchronized Dispatch latest(CraftingCPUCluster cpu,ICraftingPatternDetails pattern){
         Map<ICraftingPatternDetails,Dispatch> map=DISPATCHES.get(cpu);
         return map==null?null:map.get(pattern);
     }
     public static synchronized void remember(CraftingCPUCluster cpu, ICraftingPatternDetails pattern) {
+        FINISHED.remove(cpu);
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         if (set.size() < LIMIT) set.add(pattern);
     }
-    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); }
-    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); }
+    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); }
+    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); }
     public static synchronized List<ICraftingPatternDetails> patterns(CraftingCPUCluster cpu) {
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         for (ICraftingPatternDetails p : ((CpuAccessor)(Object)cpu).lattice$getTasks().keySet()) {

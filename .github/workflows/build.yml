@@ -1,14 +1,27 @@
-name: Build and test legacy
+name: Legacy CI
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main, 'backport/**']
+    paths:
+      - 'src/**'
+      - 'gradle/**'
+      - 'gtnhShared/**'
+      - '**/*.gradle'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: legacy-ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,3 +37,11 @@ jobs:
           name: ae2-lattice-legacy-build
           path: build/libs/*.jar
           if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-reports
+          path: build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7

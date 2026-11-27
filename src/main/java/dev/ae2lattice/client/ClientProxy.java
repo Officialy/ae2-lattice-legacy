@@ -24,6 +24,7 @@ public final class ClientProxy extends CommonProxy {
     @Override public void init(){
         FMLCommonHandler.instance().bus().register(this);
         MinecraftForge.EVENT_BUS.register(this);
+        MinecraftForge.EVENT_BUS.register(new WorldHighlight());
     }
     @Override public void receive(Snapshot value){ INBOX.set(value); }
     @SubscribeEvent public void registration(FMLNetworkEvent.CustomPacketRegistrationEvent<?> e){
@@ -37,6 +38,7 @@ public final class ClientProxy extends CommonProxy {
     public static boolean key(int key){
         if(!(Minecraft.getMinecraft().currentScreen instanceof GuiCraftingCPU))return false;
         if(key==org.lwjgl.input.Keyboard.KEY_F8 && available){
+            screen=(GuiCraftingCPU)Minecraft.getMinecraft().currentScreen;
             tree=!tree;nonce++;snapshot=null;GraphRenderer.reset();return true;
         }
         if(active() && key==org.lwjgl.input.Keyboard.KEY_ESCAPE){
@@ -49,7 +51,7 @@ public final class ClientProxy extends CommonProxy {
         ticks++;
         Minecraft mc=Minecraft.getMinecraft();
         GuiCraftingCPU current=mc.currentScreen instanceof GuiCraftingCPU?(GuiCraftingCPU)mc.currentScreen:null;
-        if(screen!=current || !available){
+        if(screen!=current || (!available && tree)){
             screen=current;tree=false;snapshot=null;nonce++;GraphRenderer.reset();
         }
         Snapshot next=INBOX.getAndSet(null);

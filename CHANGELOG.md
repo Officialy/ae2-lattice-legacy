@@ -8,3 +8,7 @@
 - Limited GT5U candidate machine telemetry.
 - Observe accepted pattern dispatches without mutating crafting behavior; distinguish last accepting provider from candidates.
 - Codec tests and build workflow.
+
+- Path-filtered push-only CI with superseded-run cancellation and manual dispatch.
+- Protocol 2: owner-authorized GT controller telemetry, candidate highlighting and completion summaries.
+- Validate CPU/terminal grid identity; charge rejected requests against the processing budget.

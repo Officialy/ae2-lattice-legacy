@@ -47,3 +47,11 @@ Use the GTNH convention build with the included wrapper (Gradle daemon JDK 25; J
 The workflow builds and uploads artifacts; it does not publish releases.
 Before release, run dedicated/integrated server tests for all installation combinations, mismatched protocols,
 GUI switching, canceled/merged/restored crafts, machine ownership and chunk boundaries, and large GTNH jobs.
+
+### Legacy CI
+
+One build per qualifying push to main/backport branches, not separate duplicate PR and push builds. Only source, resources, tests, Gradle and CI configuration changes trigger builds. Manual dispatch is available when Actions is enabled and the workflow exists on the default branch. Obsolete same-branch runs are canceled. No scheduled builds or release publishing. Fork Actions may need enabling in the repository UI.
+
+### Preview 2
+
+Protocol 2 adds bounded controller/tile energy and inventory/fluid summaries, same-dimension right-click highlighting (10 seconds), and recent completion/cancel summaries. Controller readings are owner-only and not a claim that the machine is running the selected recipe; multiblock hatch inventories are not traversed. Successful dispatch records retain the interface's exposed face mask where available. The server now validates that the selected CPU belongs to the open terminal's actual grid, and charges invalid requests against the per-tick processing budget. The mod still requires runtime compatibility tests.
