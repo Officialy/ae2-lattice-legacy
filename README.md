@@ -55,8 +55,6 @@ reported when joining. In singleplayer, just install it on the client.
 ./gradlew build
 ```
 
-Publishing to Modrinth: set `MODRINTH_TOKEN` and run `./gradlew modrinth`.
-
 ## License
 
 MIT - see [LICENSE](LICENSE).
