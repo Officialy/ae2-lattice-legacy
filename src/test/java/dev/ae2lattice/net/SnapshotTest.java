@@ -19,6 +19,15 @@ public class SnapshotTest {
         assertEquals(-1,decoded.dim);assertEquals(-30,decoded.z);
         assertEquals(123,decoded.energy);assertEquals("Water",decoded.fluids);
     }
+    @Test public void dispatchAndHatchesRoundTrip() throws Exception {
+        Snapshot.Machine m=new Snapshot.Machine(0,1,2,3,4,5,"","",4);
+        Snapshot.Node n=new Snapshot.Node("Copper","","",1,2,3,4,5,6,7,8,new int[0],m,12,34,2,"Observed receiving tile");
+        Snapshot s=new Snapshot(1,2,"CPU","Output","Crafting",0,0,0,false,Collections.singletonList(n));
+        Snapshot.Node decoded=Snapshot.decode(s.encode()).nodes.get(0);
+        assertEquals(12,decoded.dispatched);assertEquals(34,decoded.returned);
+        assertEquals(2,decoded.destinations);assertEquals(4,decoded.machine.hatches);
+        assertEquals("Observed receiving tile",decoded.route);
+    }
     @Test(expected=java.io.IOException.class) public void rejectsOversize() throws Exception {
         Snapshot.decode(new byte[Snapshot.MAX_BYTES+1]);
     }

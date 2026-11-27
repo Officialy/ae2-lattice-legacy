@@ -5,7 +5,7 @@ import java.util.*;
 
 /** No object deserialization, NBT or coordinates supplied by clients. */
 public final class Snapshot {
-    public static final int PROTOCOL = 2;
+    public static final int PROTOCOL = 3;
     public static final int MAX_BYTES = 24576;
     public static final int MAX_NODES = 96;
     public static final int MAX_EDGES = 12;
@@ -25,15 +25,22 @@ public final class Snapshot {
     public static final class Machine {
         public final int dim,x,y,z;
         public final long energy,capacity;
+        public final int hatches;
         public final String inventory,fluids;
         public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids){
+            this(dim,x,y,z,energy,capacity,inventory,fluids,0);
+        }
+        public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids,int hatches){
+            this.hatches=hatches;
             this.dim=dim;this.x=x;this.y=y;this.z=z;this.energy=energy;this.capacity=capacity;
             this.inventory=inventory;this.fluids=fluids;
         }
     }
     public static final class Node {
         public final String label, reason, provider;
-        public final long runs, stored, active, pending;
+        public final long runs, stored, active, pending, dispatched, returned;
+        public final int destinations;
+        public final String route;
         public final int progress, maxProgress, itemId, damage;
         public final int[] dependencies;
         public final Machine machine;
@@ -43,6 +50,12 @@ public final class Snapshot {
         }
         public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
                     int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine){
+            this(label,reason,provider,runs,stored,active,pending,progress,maxProgress,itemId,damage,dependencies,machine,0,0,0,"");
+        }
+        public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
+                    int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine,
+                    long dispatched,long returned,int destinations,String route){
+            this.dispatched=dispatched;this.returned=returned;this.destinations=destinations;this.route=route;
             this.machine=machine;
             this.label=label; this.reason=reason; this.provider=provider; this.runs=runs; this.stored=stored;
             this.active=active; this.pending=pending; this.progress=progress; this.maxProgress=maxProgress;
@@ -67,11 +80,12 @@ public final class Snapshot {
                 string(out,n.label); string(out,n.reason); string(out,n.provider);
                 out.writeLong(n.runs); out.writeLong(n.stored); out.writeLong(n.active); out.writeLong(n.pending);
                 out.writeInt(n.progress); out.writeInt(n.maxProgress); out.writeInt(n.itemId); out.writeInt(n.damage);
+                out.writeLong(n.dispatched);out.writeLong(n.returned);out.writeByte(n.destinations);string(out,n.route);
                 out.writeBoolean(n.machine!=null);
                 if(n.machine!=null){
                     Machine m=n.machine;
                     out.writeInt(m.dim);out.writeInt(m.x);out.writeInt(m.y);out.writeInt(m.z);
-                    out.writeLong(m.energy);out.writeLong(m.capacity);string(out,m.inventory);string(out,m.fluids);
+                    out.writeLong(m.energy);out.writeLong(m.capacity);string(out,m.inventory);string(out,m.fluids);out.writeByte(m.hatches);
                 }
                 int edges=0;
                 for(int d:n.dependencies) if(d>=0 && d<count && d!=i && edges<MAX_EDGES) edges++;
@@ -99,9 +113,11 @@ public final class Snapshot {
             String label=in.readUTF(), reason=in.readUTF(), provider=in.readUTF();
             long runs=in.readLong(), stored=in.readLong(), active=in.readLong(), pending=in.readLong();
             int progress=in.readInt(), max=in.readInt(), itemId=in.readInt(), damage=in.readInt();
+            long dispatched=in.readLong(),returned=in.readLong();int destinations=in.readUnsignedByte();String route=in.readUTF();
+            if(dispatched<0 || returned<0 || destinations>8)throw new IOException("Invalid event counters");
             Machine machine=null;
             if(in.readBoolean())machine=new Machine(in.readInt(),in.readInt(),in.readInt(),in.readInt(),
-                in.readLong(),in.readLong(),in.readUTF(),in.readUTF());
+                in.readLong(),in.readLong(),in.readUTF(),in.readUTF(),in.readUnsignedByte());
             int edges=in.readUnsignedByte();
             if(edges>MAX_EDGES) throw new IOException("Too many edges");
             int[] deps=new int[edges];
@@ -109,7 +125,7 @@ public final class Snapshot {
                 deps[j]=in.readUnsignedShort();
                 if(deps[j]>=count || deps[j]==i) throw new IOException("Invalid edge");
             }
-            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine));
+            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine,dispatched,returned,destinations,route));
         }
         if(in.available()!=0) throw new IOException("Trailing snapshot bytes");
         return new Snapshot(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes);

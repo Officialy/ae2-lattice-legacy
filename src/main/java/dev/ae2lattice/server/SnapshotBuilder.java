@@ -39,6 +39,7 @@ final class SnapshotBuilder {
         }
         List<Snapshot.Node> nodes=new ArrayList<>();
         int probes=0;
+        MachineResolver.Budget budget=new MachineResolver.Budget();
         for(int i=0;i<count;i++){
             ICraftingPatternDetails pattern=patterns.get(i);
             Set<Integer> deps=new LinkedHashSet<>();
@@ -56,6 +57,7 @@ final class SnapshotBuilder {
             String reason="",provider="";
             int progress=-1,max=-1,id=-1,damage=0;
             Snapshot.Machine machine=null;
+            long dispatched=0,returned=0;int destinations=0;String route="";
             if(out!=null){
                 stored=cpu.getStackAmount(out,CraftingItemList.STORAGE);
                 active=cpu.getStackAmount(out,CraftingItemList.ACTIVE);
@@ -63,9 +65,12 @@ final class SnapshotBuilder {
                 if(pending>0) reason=cpu.getScheduledReason(out).name();
                 ItemStack icon=out.getItemStackForNEI();
                 if(icon!=null){id=Item.getIdFromItem(icon.getItem());damage=icon.getItemDamage();}
+                returned=JobTrack.returnedCount(cpu,out);
                 JobTrack.Dispatch dispatch=JobTrack.latest(cpu,pattern);
                 if(dispatch!=null){
+                    dispatched=dispatch.count;destinations=dispatch.destinations.size();
                     provider="Accepted "+dispatch.count+"x";
+                    if(destinations>0)route="Last push: "+destinations+(dispatch.partial?"+":"")+" receiving tiles";
                     if(dispatch.provider!=null) provider+=" at "+dispatch.provider.getCustomName();
                 }
                 if((active>0 || pending>0) && probes<PROBE_LIMIT){
@@ -81,13 +86,17 @@ final class SnapshotBuilder {
                             if(candidates.size()==1)coord=candidates.get(0);
                         }
                     }
-                    if(coord!=null && Loader.isModLoaded("gregtech")){
-                        GregTechProbe.Reading reading=probe(coord,player,dispatch==null?0:dispatch.targetMask);
-                        if(reading!=null){provider+=" / "+reading.state; progress=reading.progress; max=reading.max; machine=reading.machine;}
+                    if(Loader.isModLoaded("gregtech")){
+                        MachineResolver.Result resolved=MachineResolver.resolve(dispatch,coord,cpu.getGrid(),player,budget);
+                        if(resolved!=null){
+                            GregTechProbe.Reading reading=resolved.reading;
+                            route=resolved.route;
+                            provider+=" / "+reading.state;progress=reading.progress;max=reading.max;machine=reading.machine;
+                        }
                     }
                 }
             }
-            nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges,machine));
+            nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges,machine,dispatched,returned,destinations,route));
         }
         IAEStack<?> output=cpu.getFinalMultiOutput();
         JobTrack.observeOutput(cpu,output);
@@ -100,22 +109,5 @@ final class SnapshotBuilder {
     }
     private static IAEStack<?> first(IAEStack<?>[] stacks){
         for(IAEStack<?> s:stacks) if(s!=null)return s;return null;
-    }
-    private static GregTechProbe.Reading probe(NamedDimensionalCoord c,EntityPlayerMP player,int targetMask){
-        World world=DimensionManager.getWorld(c.getDimension());
-        if(world==null || !world.blockExists(c.x,c.y,c.z)) return null;
-        TileEntity found=null;
-        // An actual provider's exposed faces are preferred. A fallback remains only a candidate.
-        for(ForgeDirection d:ForgeDirection.VALID_DIRECTIONS){
-            if(targetMask!=0 && (targetMask & (1<<d.ordinal()))==0)continue;
-            int x=c.x+d.offsetX,y=c.y+d.offsetY,z=c.z+d.offsetZ;
-            if(!world.blockExists(x,y,z))continue;
-            TileEntity tile=world.getTileEntity(x,y,z);
-            if(GregTechProbe.isMachine(tile)){
-                if(found!=null)return null; // Count even non-owned machines when detecting ambiguity.
-                found=tile;
-            }
-        }
-        return found==null?null:GregTechProbe.read(found,player);
     }
 }

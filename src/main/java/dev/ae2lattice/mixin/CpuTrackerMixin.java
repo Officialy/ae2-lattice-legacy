@@ -6,6 +6,8 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.inventory.InventoryCrafting;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
 import dev.ae2lattice.server.JobTrack;
+import dev.ae2lattice.server.DispatchContext;
+import appeng.api.storage.data.IAEStack;
 import org.spongepowered.asm.mixin.Mixin;
 import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.injection.At;
@@ -22,12 +24,20 @@ public abstract class CpuTrackerMixin {
         target = "Lappeng/api/networking/crafting/ICraftingMedium;pushPattern(Lappeng/api/networking/crafting/ICraftingPatternDetails;Lnet/minecraft/inventory/InventoryCrafting;)Z"))
     private boolean lattice$dispatch(ICraftingMedium medium, ICraftingPatternDetails pattern,
                                       InventoryCrafting inventory, Operation<Boolean> original) {
-        boolean accepted = original.call(medium, pattern, inventory);
-        if (accepted) {
-            try { JobTrack.dispatched((CraftingCPUCluster)(Object)this, pattern, medium); }
-            catch (RuntimeException ignored) { /* Do not disrupt successful AE2 crafts. */ }
+        try(DispatchContext context=DispatchContext.begin(pattern)){
+            boolean accepted=original.call(medium,pattern,inventory);
+            if(accepted){
+                try{JobTrack.dispatched((CraftingCPUCluster)(Object)this,pattern,medium,context);}
+                catch(RuntimeException ignored){ /* Never change a successful AE2 craft. */ }
+            }
+            return accepted;
         }
-        return accepted;
+    }
+    // AE2 invokes this only for outputs actually credited in MODULATE mode.
+    @Inject(method="recordReturnedOutputs",at=@At("HEAD"))
+    private void lattice$returned(IAEStack<?> stack,CallbackInfo ci){
+        try{JobTrack.returned((CraftingCPUCluster)(Object)this,stack);}
+        catch(RuntimeException ignored){}
     }
     @Inject(method = "cancel", at = @At("HEAD"))
     private void lattice$cancel(CallbackInfo ci) {

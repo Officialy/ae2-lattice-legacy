@@ -18,7 +18,23 @@ public final class JobTrack {
     private static final Map<CraftingCPUCluster, Map<ICraftingPatternDetails, Dispatch>> DISPATCHES = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Finished> FINISHED = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, String> OUTPUTS = new WeakHashMap<>();
+    private static final Map<CraftingCPUCluster, Map<IAEStack<?>,Long>> RETURNS=new WeakHashMap<>();
     private JobTrack() {}
+    private static IAEStack<?> key(IAEStack<?> stack){
+        IAEStack<?> copy=stack.copy();copy.setStackSize(1);return copy;
+    }
+    public static synchronized void returned(CraftingCPUCluster cpu,IAEStack<?> stack){
+        if(stack==null || stack.getStackSize()<=0)return;
+        Map<IAEStack<?>,Long> counts=RETURNS.computeIfAbsent(cpu,k->new HashMap<>());
+        IAEStack<?> key=key(stack);
+        if(!counts.containsKey(key) && counts.size()>=512)return;
+        long previous=counts.getOrDefault(key,0L), amount=stack.getStackSize();
+        counts.put(key,previous>Long.MAX_VALUE-amount?Long.MAX_VALUE:previous+amount);
+    }
+    static synchronized long returnedCount(CraftingCPUCluster cpu,IAEStack<?> stack){
+        Map<IAEStack<?>,Long> counts=RETURNS.get(cpu);
+        return counts==null?0:counts.getOrDefault(key(stack),0L);
+    }
     static final class Finished {
         final String output,status;
         final long elapsed,total,remaining,at;
@@ -50,13 +66,16 @@ public final class JobTrack {
         final NamedDimensionalCoord provider;
         final long count;
         final int targetMask;
-        Dispatch(NamedDimensionalCoord provider,long count,int targetMask){
+        final List<NamedDimensionalCoord> destinations;
+        final boolean partial;
+        Dispatch(NamedDimensionalCoord provider,long count,int targetMask,List<NamedDimensionalCoord> destinations,boolean partial){
             this.provider=provider;this.count=count;this.targetMask=targetMask;
+            this.destinations=Collections.unmodifiableList(new ArrayList<>(destinations));this.partial=partial;
         }
     }
 
     // Observe successful handoffs only; never retain a tile or crafting medium.
-    public static synchronized void dispatched(CraftingCPUCluster cpu, ICraftingPatternDetails pattern, ICraftingMedium medium) {
+    public static synchronized void dispatched(CraftingCPUCluster cpu, ICraftingPatternDetails pattern, ICraftingMedium medium,DispatchContext context) {
         remember(cpu,pattern);
         if(!JOBS.get(cpu).contains(pattern)) return;
         Map<ICraftingPatternDetails,Dispatch> map=DISPATCHES.computeIfAbsent(cpu,k->new HashMap<>());
@@ -78,7 +97,7 @@ public final class JobTrack {
                 }
             }
         } catch(RuntimeException ignored) { /* Optional metadata. */ }
-        map.put(pattern,new Dispatch(provider,count,targetMask));
+        map.put(pattern,new Dispatch(provider,count,targetMask,context.destinations(),context.partial()));
     }
     public static synchronized Dispatch latest(CraftingCPUCluster cpu,ICraftingPatternDetails pattern){
         Map<ICraftingPatternDetails,Dispatch> map=DISPATCHES.get(cpu);
@@ -89,8 +108,8 @@ public final class JobTrack {
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         if (set.size() < LIMIT) set.add(pattern);
     }
-    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); }
-    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); }
+    public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); RETURNS.remove(cpu); }
+    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); RETURNS.clear(); }
     public static synchronized List<ICraftingPatternDetails> patterns(CraftingCPUCluster cpu) {
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         for (ICraftingPatternDetails p : ((CpuAccessor)(Object)cpu).lattice$getTasks().keySet()) {

@@ -16,12 +16,14 @@ public final class LateMixins implements ILateMixinLoader {
             result.add("CpuAccessor");
             result.add("TaskAccessor");
             result.add("CpuTrackerMixin");
+            result.add("InterfaceDispatchMixin");
             if (FMLLaunchHandler.side().isClient()) {
                 result.add("ClientCpuMixin");
                 result.add("ClientBaseGuiMixin");
                 result.add("ClientStatusMixin");
             }
         }
+        if(mods.contains("gregtech"))result.add("HatchWatcherAccessor");
         return result;
     }
 }

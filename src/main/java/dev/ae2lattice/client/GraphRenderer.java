@@ -18,8 +18,11 @@ public final class GraphRenderer {
     private static final int W=202,H=88,DX=236,DY=104;
     private static final RenderItem ITEMS=new RenderItem();
     private static Snapshot.Node hovered;
+    private static final FlowAnimation FLOW=new FlowAnimation();
+    private static Snapshot layoutSource;
+    private static int[][] cachedLayout;
     private GraphRenderer(){}
-    public static void reset(){zoom=1;panX=12;panY=60;dragging=false;hovered=null;}
+    public static void reset(){zoom=1;panX=12;panY=60;dragging=false;hovered=null;FLOW.reset();layoutSource=null;cachedLayout=null;}
     public static void mouse(){
         Minecraft mc=Minecraft.getMinecraft();
         if(mc.currentScreen==null)return;
@@ -73,9 +76,12 @@ public final class GraphRenderer {
         Minecraft mc=Minecraft.getMinecraft();FontRenderer f=mc.fontRenderer;
         Gui.drawRect(0,0,w,h,0xFF111923);
         hovered=null;
+        long now=System.nanoTime();FLOW.accept(data,now);
         if(data!=null){
             List<Snapshot.Node> nodes=data.nodes;
-            int[][] pos=layout(nodes);
+            if(layoutSource!=data){cachedLayout=layout(nodes);layoutSource=data;}
+            int[][] pos=cachedLayout;
+            int pulseBudget=32;
             GL11.glPushMatrix();
             GL11.glTranslatef(panX,panY,0);GL11.glScalef(zoom,zoom,1);
             for(int i=0;i<nodes.size();i++)for(int p:nodes.get(i).dependencies){
@@ -84,6 +90,20 @@ public final class GraphRenderer {
                 Gui.drawRect(Math.min(ax,mid),ay,Math.max(ax,mid)+1,ay+1,0xFF526C88);
                 Gui.drawRect(mid,Math.min(ay,by),mid+1,Math.max(ay,by)+1,0xFF526C88);
                 Gui.drawRect(Math.min(mid,bx),by,Math.max(mid,bx)+1,by+1,0xFF526C88);
+                double phase=FLOW.phase(p,now);
+                if(phase>=0 && pulseBudget>0){
+                    int[] pt=FlowAnimation.point(ax,ay,mid,bx,by,phase);
+                    if(pt[0]*zoom+panX>=0 && pt[0]*zoom+panX<=w && pt[1]*zoom+panY>=42 && pt[1]*zoom+panY<h-16){
+                        pulseBudget--;
+                        Snapshot.Node source=nodes.get(p);Item item=source.itemId<0?null:Item.getItemById(source.itemId);
+                        Gui.drawRect(pt[0]-4,pt[1]-4,pt[0]+5,pt[1]+5,0xCC40B5AA);
+                        if(item!=null && zoom>=0.6f){
+                            net.minecraft.client.renderer.RenderHelper.enableGUIStandardItemLighting();
+                            ITEMS.renderItemAndEffectIntoGUI(f,mc.getTextureManager(),new ItemStack(item,1,source.damage),pt[0]-8,pt[1]-8);
+                            net.minecraft.client.renderer.RenderHelper.disableStandardItemLighting();
+                        }
+                    }
+                }
             }
             for(int i=0;i<nodes.size();i++){
                 Snapshot.Node n=nodes.get(i);int x=pos[i][0],y=pos[i][1];
@@ -102,7 +122,7 @@ public final class GraphRenderer {
                 text(f,n.label,x+28,y+8,0xFFFFFF,W-34);
                 text(f,"Stored "+n.stored+" | Active "+n.active,x+8,y+26,0xA9D8FF,W-16);
                 text(f,"Pending "+n.pending+" | Runs "+n.runs,x+8,y+38,0xD4DCE4,W-16);
-                text(f,n.reason.equals("UNDEFINED")?"":n.reason,x+8,y+50,0xE7BC77,W-16);
+                text(f,n.reason.equals("UNDEFINED")||n.reason.isEmpty()?"CPU returned "+n.returned:n.reason,x+8,y+50,0xE7BC77,W-16);
                 text(f,n.provider,x+8,y+62,0xC5D3DE,W-16);
                 if(n.maxProgress>0){
                     Gui.drawRect(x+8,y+76,x+W-8,y+81,0xFF101820);
@@ -124,15 +144,16 @@ public final class GraphRenderer {
         }
         if(hovered!=null && hovered.machine!=null){
             Snapshot.Machine m=hovered.machine;
-            List<String> lines=Arrays.asList("Candidate machine (controller/tile only)",
+            List<String> lines=Arrays.asList(hovered.route.isEmpty()?"Candidate machine":hovered.route,
                 "Dim "+m.dim+" / "+m.x+", "+m.y+", "+m.z,"Energy: "+m.energy+" / "+m.capacity+" EU",
+                "Authorized sampled hatches: "+m.hatches,
                 "Items: "+(m.inventory.isEmpty()?"Unavailable / empty":m.inventory),
                 "Fluids: "+(m.fluids.isEmpty()?"Unavailable / empty":m.fluids),"Right-click: highlight for 10s");
-            int tw=Math.min(w-16,340),tx=Math.max(4,Math.min(mx+10,w-tw-4)),ty=Math.max(44,Math.min(my+10,h-92));
-            Gui.drawRect(tx,ty,tx+tw,ty+78,0xF01B2837);
+            int tw=Math.min(w-16,340),tx=Math.max(4,Math.min(mx+10,w-tw-4)),ty=Math.max(44,Math.min(my+10,h-104));
+            Gui.drawRect(tx,ty,tx+tw,ty+90,0xF01B2837);
             for(int i=0;i<lines.size();i++)text(f,lines.get(i),tx+5,ty+4+i*12,0xE1EBF4,tw-10);
         }
         Gui.drawRect(0,h-16,w,h,0xFF1B2837);
-        text(f,"Amounts are CPU-wide per output. Machine progress is candidate telemetry, not dispatch attribution.",5,h-12,0xA9BAC9,w-10);
+        text(f,"CPU output counts; animated links are illustrative, not confirmed item routes.",5,h-12,0xA9BAC9,w-10);
     }
 }
