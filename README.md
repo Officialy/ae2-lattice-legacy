@@ -13,7 +13,7 @@ GTNH AE2 rv3-beta-1104-GTNH and optional GT5U 5.09.54.195. Exact GTNH pack relea
 - Integrated server / singleplayer uses the same path.
 - F8 in an AE2 crafting CPU/status GUI toggles the graph. Escape or F8 returns to native grid.
 - The graph uses server-side task patterns, including remembered patterns from jobs observed since submission.
-- CPU-wide stored, active and pending counts; scheduling reasons; provider candidates and limited GT machine progress.
+- CPU-wide stored, active and pending counts; scheduling reasons; observed successful dispatch counts and last accepting provider, plus candidate GT machine progress.
 - Pan and zoom; no custom commands, blocks or world data. Native AE2 controls remain authoritative.
 
 ## Security and performance
@@ -28,13 +28,13 @@ loaded. No OpenComputers, external services or network listeners.
 
 ## Current limitations
 
-This is a first implementation slice. It does not yet capture exact push/return events, subnet machine paths,
+This is a first implementation slice. It records successful push events at the AE2 crafting medium boundary, but does not yet correlate individual returned outputs, traverse subnet machine paths,
 machine inventories/fluids, actual shared-machine attribution, completion summaries or the full animated
 upstream UI. Dependencies are inferred from the real selected pattern inputs/outputs; alternatives, substitutions,
 byproducts and input-only patterns may require more precise execution-plan tracking. Restored jobs may lack
 already completed patterns. CPU counts are item-wide, not independently attributable to patterns.
 Only a primary output is displayed on each card. Very large graphs are marked partial.
-A provider can be a candidate without serving the selected CPU. GT probe data must never be treated as proof
+A provider can be a candidate without serving the selected CPU. A recorded accepted push identifies the provider, not necessarily the final machine or its current job. GT probe data must never be treated as proof
 of the current recipe.
 
 ## Build

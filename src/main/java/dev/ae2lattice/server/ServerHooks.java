@@ -19,6 +19,7 @@ public final class ServerHooks {
     private static final Map<EntityPlayerMP,LatticeNetwork.Request> QUEUE=new ConcurrentHashMap<>();
     private final Map<EntityPlayerMP,Long> last=new WeakHashMap<>();
     private long tick;
+    public static void clearQueue(){ QUEUE.clear(); }
     public static void enqueue(EntityPlayerMP player,LatticeNetwork.Request request) {
         if(QUEUE.size()<512) QUEUE.putIfAbsent(player,request);
     }
@@ -38,7 +39,7 @@ public final class ServerHooks {
             Long previous=last.get(p);
             if(previous!=null && tick-previous<10) continue;
             last.put(p,tick);
-            if(p.isDead || !(p.openContainer instanceof ContainerCraftingCPU)
+            if(p.isDead || p.playerNetServerHandler == null || !(p.openContainer instanceof ContainerCraftingCPU)
                 || p.openContainer.windowId!=req.window || !p.openContainer.canInteractWith(p)) continue;
             ContainerCraftingCPU container=(ContainerCraftingCPU)p.openContainer;
             CraftingCPUCluster cpu=container.getCpu();

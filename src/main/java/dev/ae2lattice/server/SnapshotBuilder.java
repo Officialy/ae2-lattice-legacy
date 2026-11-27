@@ -59,17 +59,27 @@ final class SnapshotBuilder {
                 if(pending>0) reason=cpu.getScheduledReason(out).name();
                 ItemStack icon=out.getItemStackForNEI();
                 if(icon!=null){id=Item.getIdFromItem(icon.getItem());damage=icon.getItemDamage();}
+                JobTrack.Dispatch dispatch=JobTrack.latest(cpu,pattern);
+                if(dispatch!=null){
+                    provider="Accepted "+dispatch.count+"x";
+                    if(dispatch.provider!=null) provider+=" at "+dispatch.provider.getCustomName();
+                }
                 if((active>0 || pending>0) && probes<PROBE_LIMIT){
                     probes++;
-                    List<NamedDimensionalCoord> candidates=cpu.getProviders(out);
-                    if(candidates!=null && !candidates.isEmpty()){
-                        NamedDimensionalCoord coord=candidates.get(0);
-                        provider=coord.getCustomName()+(candidates.size()>1?" (+"+(candidates.size()-1)+")":"");
-                        // Candidates are not proof of which CPU a machine is serving.
-                        if(candidates.size()==1 && Loader.isModLoaded("gregtech")){
-                            GregTechProbe.Reading reading=probe(coord,player);
-                            if(reading!=null){provider+=" / "+reading.state; progress=reading.progress; max=reading.max;}
+                    // Prefer the last accepting provider. The adjacent machine remains a candidate.
+                    NamedDimensionalCoord coord=dispatch==null?null:dispatch.provider;
+                    if(coord==null){
+                        List<NamedDimensionalCoord> candidates=cpu.getProviders(out);
+                        if(candidates!=null && !candidates.isEmpty()){
+                            if(!provider.isEmpty())provider+=" / ";
+                            provider+="Candidate: "+candidates.get(0).getCustomName()+
+                                (candidates.size()>1?" (+"+(candidates.size()-1)+")":"");
+                            if(candidates.size()==1)coord=candidates.get(0);
                         }
+                    }
+                    if(coord!=null && Loader.isModLoaded("gregtech")){
+                        GregTechProbe.Reading reading=probe(coord,player);
+                        if(reading!=null){provider+=" / "+reading.state; progress=reading.progress; max=reading.max;}
                     }
                 }
             }

@@ -96,7 +96,7 @@ public final class GraphRenderer {
                 text(f,"Stored "+n.stored+" | Active "+n.active,x+8,y+26,0xA9D8FF,W-16);
                 text(f,"Pending "+n.pending+" | Runs "+n.runs,x+8,y+38,0xD4DCE4,W-16);
                 text(f,n.reason.equals("UNDEFINED")?"":n.reason,x+8,y+50,0xE7BC77,W-16);
-                text(f,n.provider.isEmpty()?"":("Candidate: "+n.provider),x+8,y+62,0xC5D3DE,W-16);
+                text(f,n.provider,x+8,y+62,0xC5D3DE,W-16);
                 if(n.maxProgress>0){
                     Gui.drawRect(x+8,y+76,x+W-8,y+81,0xFF101820);
                     int bar=(int)((W-16)*Math.min(1.0,Math.max(0.0,(double)n.progress/n.maxProgress)));

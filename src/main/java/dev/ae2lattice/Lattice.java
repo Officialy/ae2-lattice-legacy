@@ -4,6 +4,8 @@ import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
 import cpw.mods.fml.common.SidedProxy;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
+import cpw.mods.fml.common.event.FMLServerStoppedEvent;
+import dev.ae2lattice.server.JobTrack;
 import cpw.mods.fml.common.network.NetworkCheckHandler;
 import cpw.mods.fml.relauncher.Side;
 import dev.ae2lattice.net.LatticeNetwork;
@@ -29,5 +31,9 @@ public final class Lattice {
         LatticeNetwork.init();
         FMLCommonHandler.instance().bus().register(new ServerHooks());
         proxy.init();
+    }
+    @Mod.EventHandler public void serverStopped(FMLServerStoppedEvent event) {
+        ServerHooks.clearQueue();
+        JobTrack.clearAll();
     }
 }
