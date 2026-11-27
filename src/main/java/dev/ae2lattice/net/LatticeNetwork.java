@@ -16,16 +16,16 @@ public final class LatticeNetwork {
         channel.registerMessage(ResponseHandler.class,Response.class,1,Side.CLIENT);
     }
     public static final class Request implements IMessage {
-        public int window, nonce;
+        public int window, nonce, page;
         public boolean valid;
         public Request() {}
-        public Request(int window,int nonce) { this.window=window; this.nonce=nonce; valid=true; }
+        public Request(int window,int nonce,int page) { this.window=window; this.nonce=nonce; this.page=page;valid=true; }
         @Override public void fromBytes(ByteBuf b) {
-            if(b.readableBytes()!=9 || b.readUnsignedByte()!=Snapshot.PROTOCOL) return;
-            window=b.readInt(); nonce=b.readInt(); valid=true;
+            if(b.readableBytes()!=11 || b.readUnsignedByte()!=Snapshot.PROTOCOL) return;
+            window=b.readInt(); nonce=b.readInt(); page=b.readUnsignedShort();valid=page<=Snapshot.MAX_PAGE;
         }
         @Override public void toBytes(ByteBuf b) {
-            b.writeByte(Snapshot.PROTOCOL); b.writeInt(window); b.writeInt(nonce);
+            b.writeByte(Snapshot.PROTOCOL); b.writeInt(window); b.writeInt(nonce);b.writeShort(page);
         }
     }
     public static final class RequestHandler implements IMessageHandler<Request,IMessage> {

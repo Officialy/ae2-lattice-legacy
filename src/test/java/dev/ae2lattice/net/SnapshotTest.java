@@ -28,6 +28,27 @@ public class SnapshotTest {
         assertEquals(2,decoded.destinations);assertEquals(4,decoded.machine.hatches);
         assertEquals("Observed receiving tile",decoded.route);
     }
+    @Test public void pageAndCrossPageDependenciesRoundTrip() throws Exception {
+        Snapshot.Node n=new Snapshot.Node("Copper","","",1,2,3,4,5,6,7,8,new int[0],null,12,34,2,"",
+            new int[]{0,36},"1x Ore","2x Copper","",true);
+        Snapshot s=new Snapshot(1,2,"CPU","Output","Crafting",0,0,0,false,Collections.singletonList(n),1,48);
+        Snapshot decoded=Snapshot.decode(s.encode());
+        assertEquals(1,decoded.page);assertEquals(4,decoded.pageCount());
+        assertArrayEquals(new int[]{0,36},decoded.nodes.get(0).externalDependencies);
+        assertTrue(decoded.nodes.get(0).recipeSafe);assertEquals("1x Ore",decoded.nodes.get(0).ingredients);
+        assertEquals(3,Snapshot.clampPage(170,48));assertEquals(0,Snapshot.clampPage(9,0));
+    }
+    @Test public void worstCasePageFitsPacket() throws Exception {
+        char[] chars=new char[64];Arrays.fill(chars,'\u4e00');String label=new String(chars);
+        List<Snapshot.Node> nodes=new ArrayList<>();
+        for(int i=0;i<Snapshot.PAGE_SIZE;i++){
+            Snapshot.Machine m=new Snapshot.Machine(0,1,2,3,4,5,label,label,12);
+            nodes.add(new Snapshot.Node(label,label,label,1,2,3,4,5,6,7,8,new int[0],m,12,34,2,label,
+                new int[]{24,25,26,27,28,29,30,31,32,33,34,35},label,label,label,true));
+        }
+        Snapshot s=new Snapshot(1,2,label,label,label,0,0,0,false,nodes,0,48);
+        assertEquals(Snapshot.PAGE_SIZE,Snapshot.decode(s.encode()).nodes.size());
+    }
     @Test(expected=java.io.IOException.class) public void rejectsOversize() throws Exception {
         Snapshot.decode(new byte[Snapshot.MAX_BYTES+1]);
     }

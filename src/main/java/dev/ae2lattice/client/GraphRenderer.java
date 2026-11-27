@@ -8,6 +8,7 @@ import net.minecraft.client.renderer.entity.RenderItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.input.Keyboard;
 import org.lwjgl.opengl.GL11;
 import java.util.*;
 
@@ -18,11 +19,64 @@ public final class GraphRenderer {
     private static final int W=202,H=88,DX=236,DY=104;
     private static final RenderItem ITEMS=new RenderItem();
     private static Snapshot.Node hovered;
+    private static Snapshot current;
+    private static int hoveredIndex=-1,selected=-1;
+    private static boolean needFit=true,animations=true,searching;
+    private static String query="",notice="";
+    private static long noticeUntil;
+    private static int clickX,clickY;
+    private static int panelWidth;
     private static final FlowAnimation FLOW=new FlowAnimation();
     private static Snapshot layoutSource;
     private static int[][] cachedLayout;
     private GraphRenderer(){}
-    public static void reset(){zoom=1;panX=12;panY=60;dragging=false;hovered=null;FLOW.reset();layoutSource=null;cachedLayout=null;}
+    public static void reset(){query="";searching=false;resetPage();}
+    public static void resetPage(){
+        zoom=1;panX=12;panY=64;dragging=false;hovered=null;hoveredIndex=-1;selected=-1;
+        current=null;needFit=true;FLOW.reset();layoutSource=null;cachedLayout=null;
+    }
+    private static void message(String s){notice=s;noticeUntil=System.nanoTime()+3000000000L;}
+    private static Snapshot.Node target(){
+        return hovered!=null?hovered:current!=null && selected>=0 && selected<current.nodes.size()?current.nodes.get(selected):null;
+    }
+    private static void recipe(boolean usage){
+        Snapshot.Node n=target();
+        if(n==null){message("Select a crafting step first");return;}
+        if(!NeiBridge.installed()){message("NEI is not installed");return;}
+        if(!n.recipeSafe){message("Exact recipe key unavailable (NBT or unsupported stack)");return;}
+        if(!NeiBridge.open(n,usage))message("NEI found no matching recipe");
+    }
+    static boolean key(char c,int key,Snapshot snapshot){
+        if(searching){
+            if(key==Keyboard.KEY_ESCAPE || key==Keyboard.KEY_RETURN){searching=false;return true;}
+            if(key==Keyboard.KEY_BACK && !query.isEmpty())query=query.substring(0,query.length()-1);
+            else if(c>=32 && c!=127 && query.length()<48)query+=c;
+            return true;
+        }
+        if(key==Keyboard.KEY_PRIOR){if(snapshot!=null)ClientProxy.page(snapshot.page-1);return true;}
+        if(key==Keyboard.KEY_NEXT){if(snapshot!=null)ClientProxy.page(snapshot.page+1);return true;}
+        if(key==Keyboard.KEY_HOME){needFit=true;return true;}
+        if(key==Keyboard.KEY_R){recipe(false);return true;}
+        if(key==Keyboard.KEY_U){recipe(true);return true;}
+        if(key==Keyboard.KEY_F){searching=true;return true;}
+        if(key==Keyboard.KEY_A){animations=!animations;return true;}
+        if(key>=Keyboard.KEY_1 && key<=Keyboard.KEY_9){
+            Snapshot.Node n=target();int i=key-Keyboard.KEY_1;
+            if(n!=null && i<n.externalDependencies.length)ClientProxy.page(n.externalDependencies[i]/Snapshot.PAGE_SIZE);
+            return true;
+        }
+        return false;
+    }
+    private static void button(FontRenderer f,int x,int y,int w,String text){
+        Gui.drawRect(x,y,x+w,y+14,0xFF363B40);Gui.drawRect(x+1,y+1,x+w-1,y+13,0xFFB6BCC1);
+        f.drawString(f.trimStringToWidth(text,w-6),x+3,y+3,0xFF24282B);
+    }
+    static void nativeButton(){button(Minecraft.getMinecraft().fontRenderer,4,4,44,"Tree");}
+    private static void fit(int w,int h,int[][] pos){
+        int maxX=W,maxY=H;for(int[] p:pos){maxX=Math.max(maxX,p[0]+W);maxY=Math.max(maxY,p[1]+H);}
+        zoom=Math.max(.12f,Math.min(1.0f,Math.min((w-24f)/maxX,(h-92f)/maxY)));
+        panX=12;panY=64;needFit=false;
+    }
     public static void mouse(){
         Minecraft mc=Minecraft.getMinecraft();
         if(mc.currentScreen==null)return;
@@ -36,7 +90,31 @@ public final class GraphRenderer {
         if(Mouse.getEventButton()==1 && Mouse.getEventButtonState() && hovered!=null && hovered.machine!=null)
             WorldHighlight.select(hovered.machine);
         if(Mouse.getEventButton()==0){
-            dragging=Mouse.getEventButtonState();lastX=x;lastY=y;
+            if(Mouse.getEventButtonState()){
+                if(y>=4 && y<=18){
+                    if(x>=4 && x<48){ClientProxy.toggle();return;}
+                    if(x>=52 && x<88){needFit=true;return;}
+                    if(x>=92 && x<142){searching=!searching;return;}
+                    if(x>=146 && x<200){animations=!animations;return;}
+                }
+                if(y>=23 && y<=37 && current!=null){
+                    if(x>=4 && x<34){ClientProxy.page(current.page-1);return;}
+                    if(x>=38 && x<68){ClientProxy.page(current.page+1);return;}
+                }
+                if(panelWidth>0 && x>=mc.currentScreen.width-panelWidth){
+                    if(y>=88 && y<102){recipe(false);return;}
+                    if(y>=106 && y<120){recipe(true);return;}
+                    Snapshot.Node n=target();int link=(y-184)/12;
+                    if(y>=184 && n!=null && link<n.externalDependencies.length){ClientProxy.page(n.externalDependencies[link]/Snapshot.PAGE_SIZE);return;}
+                    return;
+                }
+                clickX=x;clickY=y;dragging=y>=56;lastX=x;lastY=y;
+            }else{
+                if(dragging && Math.abs(x-clickX)+Math.abs(y-clickY)<5 && hoveredIndex>=0){
+                    selected=hoveredIndex;
+                }
+                dragging=false;
+            }
         } else if(dragging && Mouse.isButtonDown(0)){
             panX+=x-lastX;panY+=y-lastY;lastX=x;lastY=y;
         } else dragging=false;
@@ -75,12 +153,15 @@ public final class GraphRenderer {
     public static void draw(int w,int h,int mx,int my,Snapshot data){
         Minecraft mc=Minecraft.getMinecraft();FontRenderer f=mc.fontRenderer;
         Gui.drawRect(0,0,w,h,0xFF111923);
-        hovered=null;
+        current=data;hovered=null;hoveredIndex=-1;
+        panelWidth=w>=440 && selected>=0?Math.min(180,w/3):0;
+        int graphW=w-panelWidth;
         long now=System.nanoTime();FLOW.accept(data,now);
         if(data!=null){
             List<Snapshot.Node> nodes=data.nodes;
             if(layoutSource!=data){cachedLayout=layout(nodes);layoutSource=data;}
             int[][] pos=cachedLayout;
+            if(needFit)fit(graphW,h,pos);
             int pulseBudget=32;
             GL11.glPushMatrix();
             GL11.glTranslatef(panX,panY,0);GL11.glScalef(zoom,zoom,1);
@@ -91,9 +172,9 @@ public final class GraphRenderer {
                 Gui.drawRect(mid,Math.min(ay,by),mid+1,Math.max(ay,by)+1,0xFF526C88);
                 Gui.drawRect(Math.min(mid,bx),by,Math.max(mid,bx)+1,by+1,0xFF526C88);
                 double phase=FLOW.phase(p,now);
-                if(phase>=0 && pulseBudget>0){
+                if(animations && phase>=0 && pulseBudget>0){
                     int[] pt=FlowAnimation.point(ax,ay,mid,bx,by,phase);
-                    if(pt[0]*zoom+panX>=0 && pt[0]*zoom+panX<=w && pt[1]*zoom+panY>=42 && pt[1]*zoom+panY<h-16){
+                    if(pt[0]*zoom+panX>=0 && pt[0]*zoom+panX<=graphW && pt[1]*zoom+panY>=42 && pt[1]*zoom+panY<h-16){
                         pulseBudget--;
                         Snapshot.Node source=nodes.get(p);Item item=source.itemId<0?null:Item.getItemById(source.itemId);
                         Gui.drawRect(pt[0]-4,pt[1]-4,pt[0]+5,pt[1]+5,0xCC40B5AA);
@@ -108,11 +189,17 @@ public final class GraphRenderer {
             for(int i=0;i<nodes.size();i++){
                 Snapshot.Node n=nodes.get(i);int x=pos[i][0],y=pos[i][1];
                 float gx=(mx-panX)/zoom,gy=(my-panY)/zoom;
-                if(my>42 && my<h-16 && gx>=x && gx<x+W && gy>=y && gy<y+H)hovered=n;
-                if(x*zoom+panX>w || (x+W)*zoom+panX<0 || y*zoom+panY>h || (y+H)*zoom+panY<42)continue;
+                if(mx<graphW && my>56 && my<h-16 && gx>=x && gx<x+W && gy>=y && gy<y+H){hovered=n;hoveredIndex=i;}
+                if(x*zoom+panX>graphW || (x+W)*zoom+panX<0 || y*zoom+panY>h || (y+H)*zoom+panY<42)continue;
                 int edge=n.active>0?0xFF40B5AA:n.pending>0?0xFFD5A950:0xFF657587;
-                Gui.drawRect(x,y,x+W,y+H,0xFF273647);
+                boolean match=query.isEmpty()||n.label.toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT));
+                Gui.drawRect(x,y,x+W,y+H,match?0xFF273647:0xFF18222C);
                 Gui.drawRect(x,y,x+3,y+H,edge);
+                if(i==selected || (!query.isEmpty() && match)){
+                    Gui.drawRect(x,y,x+W,y+2,0xFFB8E2FF);Gui.drawRect(x,y+H-2,x+W,y+H,0xFFB8E2FF);
+                }
+                if(n.externalDependencies.length>0)
+                    text(f,"+"+n.externalDependencies.length+" off-page",x+W-75,y+76,0xA9D8FF,70);
                 Item item=n.itemId<0?null:Item.getItemById(n.itemId);
                 if(item!=null){
                     net.minecraft.client.renderer.RenderHelper.enableGUIStandardItemLighting();
@@ -132,12 +219,34 @@ public final class GraphRenderer {
             }
             GL11.glPopMatrix();
         }
-        Gui.drawRect(0,0,w,42,0xFF1B2837);
-        text(f,"Lattice  |  F8 / Esc: Grid  |  Drag: pan  |  Wheel: zoom",8,7,0xE1EBF4,w-16);
+        Gui.drawRect(0,0,w,56,0xFF1B2837);
+        button(f,4,4,44,"Grid");button(f,52,4,36,"Fit");button(f,92,4,50,"Search");
+        button(f,146,4,54,animations?"Flow: on":"Flow: off");
+        if(w>208)text(f,"F8/G  |  R/U: NEI",208,8,0xE1EBF4,w-212);
+        button(f,4,23,30,"<");button(f,38,23,30,">");
+        String pageLabel=data==null?"Loading...":"Page "+(data.page+1)+"/"+data.pageCount()+"  |  "+data.totalNodes+" tracked";
+        text(f,pageLabel,73,26,0xE1EBF4,w-77);
         String info=data==null?"Waiting for authorized server telemetry...":
-            data.cpu+"  |  "+data.output+"  |  "+data.status+"  |  Remaining "+data.remaining+"/"+data.total+
-            (data.truncated?"  [partial graph]":"");
-        text(f,info,8,22,0xA9D8FF,w-16);
+            data.cpu+" | "+data.output+" | "+data.status+" | Remaining "+data.remaining+"/"+data.total+
+            (data.truncated?" [partial]":"");
+        if(searching || !query.isEmpty())info="Page search: "+query+(searching?"_":"");
+        if(System.nanoTime()<noticeUntil)info=notice;
+        text(f,info,5,43,0xA9D8FF,w-10);
+        if(panelWidth>0 && data!=null && selected<data.nodes.size()){
+            Snapshot.Node n=data.nodes.get(selected);int px=w-panelWidth;
+            Gui.drawRect(px,56,w,h-16,0xFF1D2A38);
+            text(f,"Step #"+(data.page*Snapshot.PAGE_SIZE+selected+1),px+5,62,0xA9D8FF,panelWidth-10);
+            text(f,n.label,px+5,74,0xFFFFFF,panelWidth-10);
+            button(f,px+5,88,panelWidth-10,"Recipes (R)");button(f,px+5,106,panelWidth-10,"Usages (U)");
+            text(f,"Pattern inputs:",px+5,124,0xA9D8FF,panelWidth-10);
+            f.drawSplitString(n.ingredients,px+5,136,panelWidth-10,0xE1EBF4);
+            text(f,"Pattern outputs:",px+5,158,0xA9D8FF,panelWidth-10);
+            text(f,n.products,px+5,170,0xE1EBF4,panelWidth-10);
+            for(int i=0;i<n.externalDependencies.length && 196+i*12<h-16;i++){
+                int d=n.externalDependencies[i];
+                text(f,(i+1)+": Step #"+(d+1)+" (page "+(d/Snapshot.PAGE_SIZE+1)+")",px+5,184+i*12,0xA9D8FF,panelWidth-10);
+            }
+        }
         if(data!=null && data.nodes.isEmpty() && ("Completed".equals(data.status)||"Canceled".equals(data.status))){
             text(f,data.status+": "+data.output,16,62,0xA9D8FF,w-32);
             text(f,"Elapsed: "+(data.elapsed/1000000000L)+"s | Work units: "+data.total,16,78,0xFFFFFF,w-32);
@@ -154,6 +263,6 @@ public final class GraphRenderer {
             for(int i=0;i<lines.size();i++)text(f,lines.get(i),tx+5,ty+4+i*12,0xE1EBF4,tw-10);
         }
         Gui.drawRect(0,h-16,w,h,0xFF1B2837);
-        text(f,"CPU output counts; animated links are illustrative, not confirmed item routes.",5,h-12,0xA9BAC9,w-10);
+        text(f,"PgUp/PgDn: pages | Click: details | Right-click: highlight | CPU-wide counts",5,h-12,0xA9BAC9,w-10);
     }
 }

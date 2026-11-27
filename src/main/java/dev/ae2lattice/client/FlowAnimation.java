@@ -10,7 +10,7 @@ final class FlowAnimation {
     void reset(){previous=null;start.clear();}
     void accept(Snapshot next,long now){
         if(next==previous)return;
-        if(previous==null || next==null || previous.nonce!=next.nonce ||
+        if(previous==null || next==null || previous.nonce!=next.nonce || previous.page!=next.page ||
             !Objects.equals(previous.cpu,next.cpu) || !Objects.equals(previous.output,next.output) ||
             next.elapsed<previous.elapsed || !sameTopology(previous,next)){
             start.clear();

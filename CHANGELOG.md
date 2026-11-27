@@ -16,3 +16,7 @@
 - Protocol 3: scoped actual interface receiving-tile capture and CPU return counters.
 - Bounded authorized subnet search, smart-hatch controller discovery and controller hatch sampling.
 - Event-driven item pulses, cached graph layout and animation/codec tests.
+
+- Protocol 4: bounded paged snapshots, cross-page dependencies, larger tracking cap and stale page rejection.
+- Optional NEI recipe/usage lookup for safely reconstructable item/fluid identities and actual AE2 pattern summaries.
+- Tree/Grid controls, page controls, fit, search, selected-step details and animation toggle.

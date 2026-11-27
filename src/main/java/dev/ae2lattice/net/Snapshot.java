@@ -5,11 +5,13 @@ import java.util.*;
 
 /** No object deserialization, NBT or coordinates supplied by clients. */
 public final class Snapshot {
-    public static final int PROTOCOL = 3;
+    public static final int PROTOCOL = 4;
+    public static final int PAGE_SIZE = 12, MAX_TRACKED = 2048;
+    public static final int MAX_PAGE = (MAX_TRACKED-1)/PAGE_SIZE;
     public static final int MAX_BYTES = 24576;
     public static final int MAX_NODES = 96;
     public static final int MAX_EDGES = 12;
-    public final int window, nonce;
+    public final int window, nonce, page, totalNodes;
     public final String cpu, output, status;
     public final long elapsed, total, remaining;
     public final boolean truncated;
@@ -17,10 +19,17 @@ public final class Snapshot {
 
     public Snapshot(int window, int nonce, String cpu, String output, String status,
                     long elapsed, long total, long remaining, boolean truncated, List<Node> nodes) {
+        this(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes,0,nodes.size());
+    }
+    public Snapshot(int window,int nonce,String cpu,String output,String status,long elapsed,long total,long remaining,
+                    boolean truncated,List<Node> nodes,int page,int totalNodes){
+        this.page=page;this.totalNodes=Math.min(MAX_TRACKED,totalNodes);
         this.window=window; this.nonce=nonce; this.cpu=cpu; this.output=output; this.status=status;
         this.elapsed=elapsed; this.total=total; this.remaining=remaining; this.truncated=truncated;
         this.nodes=Collections.unmodifiableList(new ArrayList<>(nodes));
     }
+    public int pageCount(){return Math.max(1,(totalNodes+PAGE_SIZE-1)/PAGE_SIZE);}
+    public static int clampPage(int page,int totalNodes){return Math.max(0,Math.min(page,Math.max(0,(totalNodes-1)/PAGE_SIZE)));}
     /** Bounded, owner-authorized observation of a loaded controller/tile. */
     public static final class Machine {
         public final int dim,x,y,z;
@@ -42,7 +51,9 @@ public final class Snapshot {
         public final int destinations;
         public final String route;
         public final int progress, maxProgress, itemId, damage;
-        public final int[] dependencies;
+        public final int[] dependencies, externalDependencies;
+        public final String ingredients, products, fluidName;
+        public final boolean recipeSafe;
         public final Machine machine;
         public Node(String label, String reason, String provider, long runs, long stored, long active, long pending,
                     int progress, int maxProgress, int itemId, int damage, int[] dependencies) {
@@ -55,6 +66,15 @@ public final class Snapshot {
         public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
                     int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine,
                     long dispatched,long returned,int destinations,String route){
+            this(label,reason,provider,runs,stored,active,pending,progress,maxProgress,itemId,damage,dependencies,machine,
+                dispatched,returned,destinations,route,new int[0],"","","",false);
+        }
+        public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
+                    int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine,
+                    long dispatched,long returned,int destinations,String route,int[] externalDependencies,
+                    String ingredients,String products,String fluidName,boolean recipeSafe){
+            this.externalDependencies=externalDependencies.clone();this.ingredients=ingredients;this.products=products;
+            this.fluidName=fluidName;this.recipeSafe=recipeSafe;
             this.dispatched=dispatched;this.returned=returned;this.destinations=destinations;this.route=route;
             this.machine=machine;
             this.label=label; this.reason=reason; this.provider=provider; this.runs=runs; this.stored=stored;
@@ -64,7 +84,7 @@ public final class Snapshot {
     }
     private static void string(DataOutputStream out, String value) throws IOException {
         if (value == null) value = "";
-        out.writeUTF(value.substring(0, Math.min(value.length(), 96)));
+        out.writeUTF(value.substring(0, Math.min(value.length(), 64)));
     }
     public byte[] encode() throws IOException {
         int count = Math.min(nodes.size(), MAX_NODES);
@@ -74,7 +94,7 @@ public final class Snapshot {
             out.writeByte(PROTOCOL); out.writeInt(window); out.writeInt(nonce);
             string(out,cpu); string(out,output); string(out,status);
             out.writeLong(elapsed); out.writeLong(total); out.writeLong(remaining);
-            out.writeBoolean(truncated || count < nodes.size()); out.writeShort(count);
+            out.writeBoolean(truncated || count < nodes.size()); out.writeShort(page);out.writeShort(totalNodes);out.writeShort(count);
             for (int i=0;i<count;i++) {
                 Node n=nodes.get(i);
                 string(out,n.label); string(out,n.reason); string(out,n.provider);
@@ -87,6 +107,11 @@ public final class Snapshot {
                     out.writeInt(m.dim);out.writeInt(m.x);out.writeInt(m.y);out.writeInt(m.z);
                     out.writeLong(m.energy);out.writeLong(m.capacity);string(out,m.inventory);string(out,m.fluids);out.writeByte(m.hatches);
                 }
+                string(out,n.ingredients);string(out,n.products);string(out,n.fluidName);out.writeBoolean(n.recipeSafe);
+                int cross=0;
+                for(int d:n.externalDependencies)if(d>=0 && d<totalNodes && d/PAGE_SIZE!=page && cross<MAX_EDGES)cross++;
+                out.writeByte(cross);
+                for(int d:n.externalDependencies)if(d>=0 && d<totalNodes && d/PAGE_SIZE!=page && cross-->0)out.writeShort(d);
                 int edges=0;
                 for(int d:n.dependencies) if(d>=0 && d<count && d!=i && edges<MAX_EDGES) edges++;
                 out.writeByte(edges);
@@ -106,7 +131,8 @@ public final class Snapshot {
         String cpu=in.readUTF(), output=in.readUTF(), status=in.readUTF();
         long elapsed=in.readLong(), total=in.readLong(), remaining=in.readLong();
         boolean truncated=in.readBoolean();
-        int count=in.readUnsignedShort();
+        int page=in.readUnsignedShort(),totalNodes=in.readUnsignedShort(),count=in.readUnsignedShort();
+        if(totalNodes>MAX_TRACKED || page>MAX_PAGE || page!=clampPage(page,totalNodes) || count>totalNodes)throw new IOException("Invalid page");
         if(count>MAX_NODES) throw new IOException("Too many nodes");
         List<Node> nodes=new ArrayList<>();
         for(int i=0;i<count;i++){
@@ -118,6 +144,14 @@ public final class Snapshot {
             Machine machine=null;
             if(in.readBoolean())machine=new Machine(in.readInt(),in.readInt(),in.readInt(),in.readInt(),
                 in.readLong(),in.readLong(),in.readUTF(),in.readUTF(),in.readUnsignedByte());
+            String ingredients=in.readUTF(),products=in.readUTF(),fluidName=in.readUTF();boolean recipeSafe=in.readBoolean();
+            int cross=in.readUnsignedByte();
+            if(cross>MAX_EDGES)throw new IOException("Too many external edges");
+            int[] external=new int[cross];
+            for(int j=0;j<cross;j++){
+                external[j]=in.readUnsignedShort();
+                if(external[j]>=totalNodes || external[j]/PAGE_SIZE==page)throw new IOException("Invalid external dependency");
+            }
             int edges=in.readUnsignedByte();
             if(edges>MAX_EDGES) throw new IOException("Too many edges");
             int[] deps=new int[edges];
@@ -125,9 +159,9 @@ public final class Snapshot {
                 deps[j]=in.readUnsignedShort();
                 if(deps[j]>=count || deps[j]==i) throw new IOException("Invalid edge");
             }
-            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine,dispatched,returned,destinations,route));
+            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine,dispatched,returned,destinations,route,external,ingredients,products,fluidName,recipeSafe));
         }
         if(in.available()!=0) throw new IOException("Trailing snapshot bytes");
-        return new Snapshot(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes);
+        return new Snapshot(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes,page,totalNodes);
     }
 }

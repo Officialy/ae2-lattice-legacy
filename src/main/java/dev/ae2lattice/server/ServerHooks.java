@@ -52,7 +52,7 @@ public final class ServerHooks {
             if(security==null || !security.hasPermission(p,SecurityPermissions.CRAFT)) continue;
             try {
                 Snapshot snapshot=cpu==null?new Snapshot(req.window,req.nonce,"","","No CPU selected",0,0,0,false,Collections.emptyList()):
-                    SnapshotBuilder.build(cpu,p,req.window,req.nonce);
+                    SnapshotBuilder.build(cpu,p,req.window,req.nonce,req.page);
                 LatticeNetwork.channel.sendTo(new LatticeNetwork.Response(snapshot),p);
             } catch(Exception ex) { LOG.debug("Could not build crafting snapshot",ex); }
         }

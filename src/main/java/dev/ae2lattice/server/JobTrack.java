@@ -13,7 +13,7 @@ import dev.ae2lattice.mixin.CpuAccessor;
 import java.util.*;
 
 public final class JobTrack {
-    private static final int LIMIT = 256;
+    private static final int LIMIT = dev.ae2lattice.net.Snapshot.MAX_TRACKED;
     private static final Map<CraftingCPUCluster, Set<ICraftingPatternDetails>> JOBS = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Map<ICraftingPatternDetails, Dispatch>> DISPATCHES = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Finished> FINISHED = new WeakHashMap<>();

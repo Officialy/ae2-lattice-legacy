@@ -9,5 +9,5 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(value=AEBaseGui.class,remap=false)
 public abstract class ClientBaseGuiMixin {
     @Inject(method="handleMouseInput",at=@At("HEAD"),cancellable=true,remap=true)
-    private void lattice$mouse(CallbackInfo ci){if(ClientProxy.active()){GraphRenderer.mouse();ci.cancel();}}
+    private void lattice$mouse(CallbackInfo ci){if(ClientProxy.active()){GraphRenderer.mouse();ci.cancel();}else if(ClientProxy.nativeMouse())ci.cancel();}
 }

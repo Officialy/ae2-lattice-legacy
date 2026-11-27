@@ -19,7 +19,8 @@ public final class ClientProxy extends CommonProxy {
     private static volatile boolean available;
     private static GuiCraftingCPU screen;
     private static boolean tree;
-    private static int nonce, ticks, lastReceived;
+    private static int nonce, ticks, lastReceived, page;
+    private static boolean preferTree;
     private static Snapshot snapshot;
     @Override public void init(){
         FMLCommonHandler.instance().bus().register(this);
@@ -35,31 +36,54 @@ public final class ClientProxy extends CommonProxy {
         available=false; INBOX.set(null);
     }
     public static boolean active(){return tree && available && Minecraft.getMinecraft().currentScreen==screen;}
-    public static boolean key(int key){
+    public static void toggle(){
+        if(!available || !(Minecraft.getMinecraft().currentScreen instanceof GuiCraftingCPU))return;
+        screen=(GuiCraftingCPU)Minecraft.getMinecraft().currentScreen;
+        tree=!tree;preferTree=tree;page=0;nonce++;snapshot=null;GraphRenderer.reset();
+    }
+    public static void page(int target){
+        if(!active() || snapshot==null)return;
+        int next=Math.max(0,Math.min(snapshot.pageCount()-1,target));
+        if(next==page)return;
+        page=next;nonce++;snapshot=null;GraphRenderer.resetPage();
+    }
+    public static boolean nativeMouse(){
+        Minecraft mc=Minecraft.getMinecraft();
+        if(!available || tree || !(mc.currentScreen instanceof GuiCraftingCPU))return false;
+        if(org.lwjgl.input.Mouse.getEventButton()!=0 || !org.lwjgl.input.Mouse.getEventButtonState())return false;
+        int x=org.lwjgl.input.Mouse.getEventX()*mc.currentScreen.width/mc.displayWidth;
+        int y=mc.currentScreen.height-org.lwjgl.input.Mouse.getEventY()*mc.currentScreen.height/mc.displayHeight-1;
+        if(x>=4 && x<=48 && y>=4 && y<=18){toggle();return true;}
+        return false;
+    }
+    public static boolean key(char c,int key){
         if(!(Minecraft.getMinecraft().currentScreen instanceof GuiCraftingCPU))return false;
         if(key==org.lwjgl.input.Keyboard.KEY_F8 && available){
-            screen=(GuiCraftingCPU)Minecraft.getMinecraft().currentScreen;
-            tree=!tree;nonce++;snapshot=null;GraphRenderer.reset();return true;
+            toggle();return true;
         }
-        if(active() && key==org.lwjgl.input.Keyboard.KEY_ESCAPE){
-            tree=false;nonce++;snapshot=null;return true;
+        if(active()){
+            if(GraphRenderer.key(c,key,snapshot))return true;
+            if(key==org.lwjgl.input.Keyboard.KEY_ESCAPE || key==org.lwjgl.input.Keyboard.KEY_G){toggle();return true;}
+            return true;
         }
-        return active();
+        return false;
     }
     @SubscribeEvent public void tick(TickEvent.ClientTickEvent e){
         if(e.phase!=TickEvent.Phase.END)return;
         ticks++;
         Minecraft mc=Minecraft.getMinecraft();
+        // NEI is a child of the native crafting GUI; retain page and view across recipe lookups.
+        if(available && tree && NeiBridge.isRecipeFor(mc.currentScreen,screen)){INBOX.set(null);return;}
         GuiCraftingCPU current=mc.currentScreen instanceof GuiCraftingCPU?(GuiCraftingCPU)mc.currentScreen:null;
         if(screen!=current || (!available && tree)){
-            screen=current;tree=false;snapshot=null;nonce++;GraphRenderer.reset();
+            screen=current;tree=current!=null && available && preferTree;page=0;snapshot=null;nonce++;GraphRenderer.reset();
         }
         Snapshot next=INBOX.getAndSet(null);
         if(active() && next!=null && next.nonce==nonce && next.window==screen.inventorySlots.windowId){
-            snapshot=next;lastReceived=ticks;
+            snapshot=next;page=next.page;lastReceived=ticks;
         }
         if(active() && ticks%10==0 && mc.thePlayer!=null)
-            LatticeNetwork.channel.sendToServer(new LatticeNetwork.Request(screen.inventorySlots.windowId,nonce));
+            LatticeNetwork.channel.sendToServer(new LatticeNetwork.Request(screen.inventorySlots.windowId,nonce,page));
         if(snapshot!=null && ticks-lastReceived>60)snapshot=null;
     }
     @SubscribeEvent public void drawPre(GuiScreenEvent.DrawScreenEvent.Pre e){
@@ -69,6 +93,6 @@ public final class ClientProxy extends CommonProxy {
     }
     @SubscribeEvent public void drawPost(GuiScreenEvent.DrawScreenEvent.Post e){
         if(e.gui==screen && available && !active())
-            Minecraft.getMinecraft().fontRenderer.drawStringWithShadow("F8: Lattice Tree",4,4,0xB8E2FF);
+            GraphRenderer.nativeButton();
     }
 }
