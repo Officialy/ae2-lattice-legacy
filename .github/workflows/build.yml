@@ -26,12 +26,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --no-daemon build
+        with:
+          cache-read-only: false
+      - name: Apply GTNH source formatting
+        run: |
+          ./gradlew --no-daemon spotlessApply
+          git diff --binary > "${RUNNER_TEMP}/gtnh-format.patch"
+      - name: Build and test
+        run: ./gradlew --no-daemon build
+      - name: Upload formatting patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gtnh-format-patch
+          path: ${{ runner.temp }}/gtnh-format.patch
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: ae2-lattice-legacy-build
@@ -46,6 +61,9 @@ jobs:
         if: failure()
         with:
           name: test-reports
-          path: build/reports/tests/
+          path: |
+            build/reports/tests/
+            build/reports/problems/
+            build/reports/checkstyle/
           if-no-files-found: ignore
           retention-days: 7
