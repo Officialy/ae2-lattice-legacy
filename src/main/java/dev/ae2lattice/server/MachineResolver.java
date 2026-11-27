@@ -8,6 +8,7 @@ import appeng.api.util.NamedDimensionalCoord;
 import appeng.helpers.IInterfaceHost;
 import appeng.me.helpers.IGridProxyable;
 import appeng.util.Platform;
+import appeng.parts.misc.PartStorageBus;
 import appeng.tile.crafting.TileMolecularAssembler;
 import cpw.mods.fml.common.Loader;
 import net.minecraft.tileentity.TileEntityFurnace;
@@ -139,6 +140,26 @@ final class MachineResolver {
                         if(isMachine(tile))candidates.add(tile);
                     }
                 }catch(RuntimeException ignored){}
+            }
+            // A storage bus can point at a machine or another interface-backed subnet.
+            // Inspect only the physical face already present in the authorized grid.
+            if(host instanceof PartStorageBus){
+                PartStorageBus bus=(PartStorageBus)host;
+                TileEntity tile=bus.getTile();
+                ForgeDirection d=bus.getSide();
+                if(tile!=null && tile.getWorldObj()!=null && d!=ForgeDirection.UNKNOWN){
+                    World w=tile.getWorldObj();
+                    if(budget.tiles--<=0)return;
+                    int x=tile.xCoord+d.offsetX,y=tile.yCoord+d.offsetY,z=tile.zCoord+d.offsetZ;
+                    if(w.blockExists(x,y,z)){
+                        TileEntity target=w.getTileEntity(x,y,z);
+                        if(isMachine(target))candidates.add(target);
+                        else if(target!=null)for(IInterfaceHost next:interfaces(target)){
+                            IGrid other=grid(next);
+                            if(other!=grid)walk(other,player,budget,visited,candidates,depth+1);
+                        }
+                    }
+                }
             }
             if(!(host instanceof IInterfaceHost))continue;
             IInterfaceHost iface=(IInterfaceHost)host;

@@ -38,6 +38,18 @@ public class SnapshotTest {
         assertTrue(decoded.nodes.get(0).recipeSafe);assertEquals("1x Ore",decoded.nodes.get(0).ingredients);
         assertEquals(3,Snapshot.clampPage(170,48));assertEquals(0,Snapshot.clampPage(9,0));
     }
+    @Test public void structuredDetailsRoundTrip()throws Exception{
+        byte[] tag={10,0,0,1,0,1,120,42,0};
+        Snapshot.Slot slot=new Snapshot.Slot(1,2,3,0,"");
+        Snapshot.Slot tank=new Snapshot.Slot(-1,0,500,1000,"water");
+        Snapshot.Machine machine=new Snapshot.Machine(0,1,2,3,4,5,"","",1,Collections.singletonList(slot),Collections.singletonList(tank));
+        Snapshot.Node node=new Snapshot.Node("Copper","","",1,2,3,4,5,6,7,8,new int[0],machine,0,0,0,"",
+            new int[0],"","","",true,new Snapshot.Details(tag,Collections.singletonList(slot),Collections.emptyList()));
+        Snapshot s=new Snapshot(1,2,"CPU","Output","Crafting",0,0,0,false,Collections.singletonList(node));
+        Snapshot.Node out=Snapshot.decode(s.encode()).nodes.get(0);
+        assertArrayEquals(tag,out.details.tag);assertTrue(out.recipeSafe);
+        assertEquals(3,out.details.inputs.get(0).amount);assertEquals(1000,out.machine.tanks.get(0).capacity);
+    }
     @Test public void worstCasePageFitsPacket() throws Exception {
         char[] chars=new char[64];Arrays.fill(chars,'\u4e00');String label=new String(chars);
         List<Snapshot.Node> nodes=new ArrayList<>();

@@ -22,3 +22,5 @@
 - Tree/Grid controls, page controls, fit, search, selected-step details and animation toggle.
 
 - Persist client view/animation preferences; cache server-side pattern topology; add basic AE2 assembler and nearby vanilla furnace progress probes.
+
+- Protocol 5: bounded NBT recipe identity, embedded encoded-pattern preview, sampled slot and tank rendering, storage-bus-facing subnet traversal and shared receiver ambiguity detection.

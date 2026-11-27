@@ -10,6 +10,8 @@ import cpw.mods.fml.common.Loader;
 import dev.ae2lattice.mixin.CpuAccessor;
 import dev.ae2lattice.mixin.TaskAccessor;
 import dev.ae2lattice.net.Snapshot;
+import dev.ae2lattice.net.ItemNbt;
+import net.minecraft.nbt.NBTTagCompound;
 import java.util.*;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.Item;
@@ -57,7 +59,7 @@ final class SnapshotBuilder {
             String reason="",provider="";
             int progress=-1,max=-1,id=-1,damage=0;
             Snapshot.Machine machine=null;
-            long dispatched=0,returned=0;int destinations=0;String route="",fluidName="";boolean recipeSafe=false;
+            long dispatched=0,returned=0;int destinations=0;String route="",fluidName="";boolean recipeSafe=false;byte[] tag=new byte[0];
             if(out!=null){
                 stored=cpu.getStackAmount(out,CraftingItemList.STORAGE);
                 active=cpu.getStackAmount(out,CraftingItemList.ACTIVE);
@@ -65,13 +67,18 @@ final class SnapshotBuilder {
                 if(pending>0) reason=cpu.getScheduledReason(out).name();
                 ItemStack icon=out.getItemStackForNEI();
                 if(icon!=null){id=Item.getIdFromItem(icon.getItem());damage=icon.getItemDamage();
-                    recipeSafe=out.isItem() && !out.hasTagCompound() && !icon.hasTagCompound();
+                    if(out.isItem()){
+                        byte[] encoded=ItemNbt.encode(icon.getTagCompound());
+                        if(encoded!=null && (!out.hasTagCompound() || icon.hasTagCompound())){tag=encoded;recipeSafe=true;}
+                    }
                 }
-                if(out instanceof IAEFluidStack && !out.hasTagCompound()){
+                if(out instanceof IAEFluidStack){
                     IAEFluidStack fluid=(IAEFluidStack)out;
                     if(fluid.getFluid()!=null){
                         fluidName=fluid.getFluid().getName();
-                        recipeSafe=fluidName.length()<=64;
+                        byte[] encoded=ItemNbt.encode(fluid.getFluidStack().tag);
+                        recipeSafe=encoded!=null && fluidName.length()<=64 && (!out.hasTagCompound() || fluid.getFluidStack().tag!=null);
+                        if(recipeSafe)tag=encoded;
                     }
                 }
                 returned=JobTrack.returnedCount(cpu,out);
@@ -101,18 +108,36 @@ final class SnapshotBuilder {
                             MachineReading reading=resolved.reading;
                             route=resolved.route;
                             provider+=" / "+reading.state;progress=reading.progress;max=reading.max;machine=reading.machine;
+                            if(JobTrack.shared(cpu,pattern,dispatch,machine)){
+                                route="Shared receiver: progress not attributed";progress=-1;max=-1;
+                            }
                         }
                     }
                 }
             }
             nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges,machine,dispatched,returned,destinations,route,external,
-                describe(pattern.getCondensedAEInputs()),describe(pattern.getCondensedAEOutputs()),fluidName,recipeSafe));
+                describe(pattern.getCondensedAEInputs()),describe(pattern.getCondensedAEOutputs()),fluidName,recipeSafe,new Snapshot.Details(tag,preview(pattern.getCondensedAEInputs()),preview(pattern.getCondensedAEOutputs()))));
         }
         IAEStack<?> output=cpu.getFinalMultiOutput();
         JobTrack.observeOutput(cpu,output);
         return new Snapshot(window,nonce,cpu.getName(),output==null?"":output.getDisplayName(),
             cpu.isSuspended()?"Suspended":"Crafting",cpu.getElapsedTime(),cpu.getStartItemCount(),
             cpu.getRemainingItemCount(),truncated,nodes,page,count);
+    }
+    private static List<Snapshot.Slot> preview(IAEStack<?>[] stacks){
+        List<Snapshot.Slot> result=new ArrayList<>();
+        for(IAEStack<?> stack:stacks){
+            if(stack==null || stack.getStackSize()<=0)continue;
+            if(result.size()>=Snapshot.MAX_SLOTS)break;
+            if(stack instanceof IAEFluidStack){
+                IAEFluidStack fluid=(IAEFluidStack)stack;
+                if(fluid.getFluid()!=null)result.add(new Snapshot.Slot(-1,0,stack.getStackSize(),0,fluid.getFluid().getName()));
+            }else{
+                ItemStack item=stack.getItemStackForNEI();
+                if(item!=null)result.add(new Snapshot.Slot(Item.getIdFromItem(item.getItem()),item.getItemDamage(),stack.getStackSize(),0,""));
+            }
+        }
+        return result;
     }
     private static String describe(IAEStack<?>[] stacks){
         StringBuilder result=new StringBuilder();

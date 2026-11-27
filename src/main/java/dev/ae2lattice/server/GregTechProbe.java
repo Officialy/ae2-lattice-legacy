@@ -9,6 +9,7 @@ import appeng.me.helpers.IGridProxyable;
 import java.util.*;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Item;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.fluids.FluidTankInfo;
@@ -37,11 +38,12 @@ final class GregTechProbe {
             addHatches(hatches,multi.mEnergyHatches,player);
             addHatches(hatches,multi.getExoticEnergyHatches(),player);
         }
-        collect(gt,items,fluids);
-        for(BaseMetaTileEntity hatch:hatches)collect(hatch,items,fluids);
+        List<Snapshot.Slot> slots=new ArrayList<>(),tanks=new ArrayList<>();
+        collect(gt,items,fluids,slots,tanks);
+        for(BaseMetaTileEntity hatch:hatches)collect(hatch,items,fluids,slots,tanks);
         tile=gt;
         Snapshot.Machine machine=new Snapshot.Machine(tile.getWorldObj().provider.dimensionId,tile.xCoord,tile.yCoord,tile.zCoord,
-            Math.max(0,gt.getStoredEU()),Math.max(0,gt.getEUCapacity()),items.toString(),fluids.toString(),hatches.size());
+            Math.max(0,gt.getStoredEU()),Math.max(0,gt.getEUCapacity()),items.toString(),fluids.toString(),hatches.size(),slots,tanks);
         return new MachineReading(!gt.isAllowedToWork()?"Disabled":gt.isActive()?"Running":"Idle",
             Math.max(0,gt.getProgress()),Math.max(0,gt.getMaxProgress()),machine);
     }
@@ -71,26 +73,28 @@ final class GregTechProbe {
                 result.add((BaseMetaTileEntity)base);
         }
     }
-    private static void collect(BaseMetaTileEntity gt,StringBuilder items,StringBuilder fluids){
+    private static void collect(BaseMetaTileEntity gt,StringBuilder items,StringBuilder fluids,List<Snapshot.Slot> observedSlots,List<Snapshot.Slot> observedTanks){
         // Avoid ME-backed virtual inventories: those can query a second network.
         if(gt.getMetaTileEntity() instanceof IGridProxyable)return;
         int size=Math.max(0,gt.getSizeInventory()), slots=Math.min(size,16);
         try {
-            for(int i=0;i<slots && items.length()<80;i++){
+            for(int i=0;i<slots && (items.length()<80 || observedSlots.size()<Snapshot.MAX_SLOTS);i++){
                 ItemStack item=gt.getStackInSlot(i);
                 if(item==null || item.stackSize<=0)continue;
-                if(items.length()>0)items.append("; ");
-                items.append(item.stackSize).append("x ").append(item.getDisplayName());
+                if(observedSlots.size()<Snapshot.MAX_SLOTS)observedSlots.add(new Snapshot.Slot(Item.getIdFromItem(item.getItem()),item.getItemDamage(),item.stackSize,0,""));
+                if(items.length()<80){if(items.length()>0)items.append("; ");items.append(item.stackSize).append("x ").append(item.getDisplayName());}
             }
             if(size>slots)items.append(" [partial]");
         } catch(RuntimeException ignored) {items.setLength(0);}
         try {
             FluidTankInfo[] tanks=gt.getTankInfo(ForgeDirection.UNKNOWN);
-            if(tanks!=null)for(int i=0;i<Math.min(tanks.length,8) && fluids.length()<80;i++){
+            if(tanks!=null)for(int i=0;i<Math.min(tanks.length,8) && (fluids.length()<80 || observedTanks.size()<Snapshot.MAX_TANKS);i++){
                 FluidTankInfo tank=tanks[i];
-                if(tank==null || tank.fluid==null)continue;
-                if(fluids.length()>0)fluids.append("; ");
-                fluids.append(tank.fluid.amount).append("mB ").append(tank.fluid.getFluid().getName());
+                if(tank==null)continue;
+                String name=tank.fluid==null || tank.fluid.getFluid()==null?"":tank.fluid.getFluid().getName();
+                long amount=tank.fluid==null?0:Math.max(0,tank.fluid.amount);
+                if(observedTanks.size()<Snapshot.MAX_TANKS)observedTanks.add(new Snapshot.Slot(-1,0,amount,Math.max(0,tank.capacity),name));
+                if(amount>0 && fluids.length()<80){if(fluids.length()>0)fluids.append("; ");fluids.append(amount).append("mB ").append(name);}
             }
         } catch(RuntimeException ignored) {fluids.setLength(0);}
         // Summaries remain bounded by the snapshot codec.

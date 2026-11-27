@@ -11,6 +11,8 @@ import net.minecraftforge.common.util.ForgeDirection;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
 import dev.ae2lattice.mixin.CpuAccessor;
 import java.util.*;
+import java.lang.ref.WeakReference;
+import dev.ae2lattice.net.Snapshot;
 
 public final class JobTrack {
     private static final int LIMIT = dev.ae2lattice.net.Snapshot.MAX_TRACKED;
@@ -20,6 +22,40 @@ public final class JobTrack {
     private static final Map<CraftingCPUCluster, String> OUTPUTS = new WeakHashMap<>();
     private static final Map<CraftingCPUCluster, Map<IAEStack<?>,Long>> RETURNS=new WeakHashMap<>();
     private static final Map<CraftingCPUCluster,Topology> TOPOLOGY=new WeakHashMap<>();
+    private static final long SHARED_WINDOW=60L*1000000000L;
+    private static final Map<String,Touch> TOUCHES=new LinkedHashMap<String,Touch>(16,.75f,true){
+        @Override protected boolean removeEldestEntry(Map.Entry<String,Touch> e){return size()>4096;}
+    };
+    private static final class Touch {
+        final WeakReference<CraftingCPUCluster> cpu;
+        final WeakReference<ICraftingPatternDetails> pattern;
+        final long at,conflict;
+        Touch(CraftingCPUCluster cpu,ICraftingPatternDetails pattern,long at,long conflict){
+            this.cpu=new WeakReference<>(cpu);this.pattern=new WeakReference<>(pattern);this.at=at;this.conflict=conflict;
+        }
+        boolean matches(CraftingCPUCluster cpu,ICraftingPatternDetails pattern){
+            return this.cpu.get()==cpu && Objects.equals(this.pattern.get(),pattern);
+        }
+    }
+    private static String coordinate(NamedDimensionalCoord c){return c.getDimension()+":"+c.x+":"+c.y+":"+c.z;}
+    private static void touch(CraftingCPUCluster cpu,ICraftingPatternDetails pattern,NamedDimensionalCoord c){
+        String key=coordinate(c);long now=System.nanoTime();Touch prior=TOUCHES.get(key);
+        long conflict=prior==null?Long.MIN_VALUE:prior.conflict;
+        if(prior!=null && now-prior.at<SHARED_WINDOW && !prior.matches(cpu,pattern))conflict=now;
+        TOUCHES.put(key,new Touch(cpu,pattern,now,conflict));
+    }
+    static synchronized boolean shared(CraftingCPUCluster cpu,ICraftingPatternDetails pattern,Dispatch dispatch,Snapshot.Machine machine){
+        if(dispatch==null)return false;
+        long now=System.nanoTime();
+        List<NamedDimensionalCoord> coords=new ArrayList<>(dispatch.destinations);
+        coords.add(new NamedDimensionalCoord(machine.x,machine.y,machine.z,machine.dim,""));
+        for(NamedDimensionalCoord coord:coords){
+            Touch t=TOUCHES.get(coordinate(coord));
+            if(t!=null && now-t.at<SHARED_WINDOW && (!t.matches(cpu,pattern) ||
+                (t.conflict!=Long.MIN_VALUE && now-t.conflict<SHARED_WINDOW)))return true;
+        }
+        return false;
+    }
     private JobTrack() {}
     private static IAEStack<?> key(IAEStack<?> stack){
         IAEStack<?> copy=stack.copy();copy.setStackSize(1);return copy;
@@ -98,7 +134,10 @@ public final class JobTrack {
                 }
             }
         } catch(RuntimeException ignored) { /* Optional metadata. */ }
-        map.put(pattern,new Dispatch(provider,count,targetMask,context.destinations(),context.partial()));
+        List<NamedDimensionalCoord> targets=context.destinations();
+        for(NamedDimensionalCoord target:targets)touch(cpu,pattern,target);
+        if(targets.isEmpty() && provider!=null)touch(cpu,pattern,provider);
+        map.put(pattern,new Dispatch(provider,count,targetMask,targets,context.partial()));
     }
     public static synchronized Dispatch latest(CraftingCPUCluster cpu,ICraftingPatternDetails pattern){
         Map<ICraftingPatternDetails,Dispatch> map=DISPATCHES.get(cpu);
@@ -110,7 +149,7 @@ public final class JobTrack {
         if (set.size() < LIMIT && set.add(pattern)) TOPOLOGY.remove(cpu);
     }
     public static synchronized void clear(CraftingCPUCluster cpu) { JOBS.remove(cpu); DISPATCHES.remove(cpu); OUTPUTS.remove(cpu); RETURNS.remove(cpu); TOPOLOGY.remove(cpu); }
-    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); RETURNS.clear(); TOPOLOGY.clear(); }
+    public static synchronized void clearAll() { JOBS.clear(); DISPATCHES.clear(); FINISHED.clear(); OUTPUTS.clear(); RETURNS.clear(); TOPOLOGY.clear(); TOUCHES.clear(); }
     public static synchronized List<ICraftingPatternDetails> patterns(CraftingCPUCluster cpu) {
         Set<ICraftingPatternDetails> set = JOBS.computeIfAbsent(cpu, k -> new LinkedHashSet<>());
         for (ICraftingPatternDetails p : ((CpuAccessor)(Object)cpu).lattice$getTasks().keySet()) {

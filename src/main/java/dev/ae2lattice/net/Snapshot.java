@@ -5,7 +5,8 @@ import java.util.*;
 
 /** No object deserialization, NBT or coordinates supplied by clients. */
 public final class Snapshot {
-    public static final int PROTOCOL = 4;
+    public static final int PROTOCOL = 5;
+    public static final int MAX_SLOTS=6, MAX_TANKS=4;
     public static final int PAGE_SIZE = 12, MAX_TRACKED = 2048;
     public static final int MAX_PAGE = (MAX_TRACKED-1)/PAGE_SIZE;
     public static final int MAX_BYTES = 24576;
@@ -30,16 +31,42 @@ public final class Snapshot {
     }
     public int pageCount(){return Math.max(1,(totalNodes+PAGE_SIZE-1)/PAGE_SIZE);}
     public static int clampPage(int page,int totalNodes){return Math.max(0,Math.min(page,Math.max(0,(totalNodes-1)/PAGE_SIZE)));}
+    /** Compact display identity, not a promise that a stack is a valid NEI key. */
+    public static final class Slot {
+        public final int id,damage;
+        public final long amount,capacity;
+        public final String fluid;
+        public Slot(int id,int damage,long amount,long capacity,String fluid){
+            this.id=id;this.damage=damage;this.amount=amount;this.capacity=capacity;this.fluid=fluid;
+        }
+    }
+    public static final class Details {
+        public static final Details EMPTY=new Details(new byte[0],Collections.emptyList(),Collections.emptyList());
+        public final byte[] tag;
+        public final List<Slot> inputs,outputs;
+        public Details(byte[] tag,List<Slot> inputs,List<Slot> outputs){
+            this.tag=tag==null?new byte[0]:tag.clone();
+            this.inputs=Collections.unmodifiableList(new ArrayList<>(inputs));
+            this.outputs=Collections.unmodifiableList(new ArrayList<>(outputs));
+        }
+    }
     /** Bounded, owner-authorized observation of a loaded controller/tile. */
     public static final class Machine {
         public final int dim,x,y,z;
         public final long energy,capacity;
         public final int hatches;
         public final String inventory,fluids;
+        public final List<Slot> slots,tanks;
         public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids){
             this(dim,x,y,z,energy,capacity,inventory,fluids,0);
         }
         public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids,int hatches){
+            this(dim,x,y,z,energy,capacity,inventory,fluids,hatches,Collections.emptyList(),Collections.emptyList());
+        }
+        public Machine(int dim,int x,int y,int z,long energy,long capacity,String inventory,String fluids,int hatches,
+                       List<Slot> slots,List<Slot> tanks){
+            this.slots=Collections.unmodifiableList(new ArrayList<>(slots));
+            this.tanks=Collections.unmodifiableList(new ArrayList<>(tanks));
             this.hatches=hatches;
             this.dim=dim;this.x=x;this.y=y;this.z=z;this.energy=energy;this.capacity=capacity;
             this.inventory=inventory;this.fluids=fluids;
@@ -54,6 +81,7 @@ public final class Snapshot {
         public final int[] dependencies, externalDependencies;
         public final String ingredients, products, fluidName;
         public final boolean recipeSafe;
+        public final Details details;
         public final Machine machine;
         public Node(String label, String reason, String provider, long runs, long stored, long active, long pending,
                     int progress, int maxProgress, int itemId, int damage, int[] dependencies) {
@@ -73,6 +101,14 @@ public final class Snapshot {
                     int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine,
                     long dispatched,long returned,int destinations,String route,int[] externalDependencies,
                     String ingredients,String products,String fluidName,boolean recipeSafe){
+            this(label,reason,provider,runs,stored,active,pending,progress,maxProgress,itemId,damage,dependencies,machine,
+                dispatched,returned,destinations,route,externalDependencies,ingredients,products,fluidName,recipeSafe,Details.EMPTY);
+        }
+        public Node(String label,String reason,String provider,long runs,long stored,long active,long pending,
+                    int progress,int maxProgress,int itemId,int damage,int[] dependencies,Machine machine,
+                    long dispatched,long returned,int destinations,String route,int[] externalDependencies,
+                    String ingredients,String products,String fluidName,boolean recipeSafe,Details details){
+            this.details=details;
             this.externalDependencies=externalDependencies.clone();this.ingredients=ingredients;this.products=products;
             this.fluidName=fluidName;this.recipeSafe=recipeSafe;
             this.dispatched=dispatched;this.returned=returned;this.destinations=destinations;this.route=route;
@@ -86,15 +122,32 @@ public final class Snapshot {
         if (value == null) value = "";
         out.writeUTF(value.substring(0, Math.min(value.length(), 64)));
     }
+    private static void slots(DataOutputStream out,List<Slot> slots,int limit)throws IOException{
+        int count=Math.min(limit,slots.size());out.writeByte(count);
+        for(int i=0;i<count;i++){
+            Slot s=slots.get(i);out.writeInt(s.id);out.writeInt(s.damage);out.writeLong(s.amount);out.writeLong(s.capacity);string(out,s.fluid);
+        }
+    }
+    private static List<Slot> slots(DataInputStream in,int limit)throws IOException{
+        int count=in.readUnsignedByte();if(count>limit)throw new IOException("Too many slots");
+        List<Slot> result=new ArrayList<>();
+        for(int i=0;i<count;i++){
+            int id=in.readInt(),damage=in.readInt();long amount=in.readLong(),capacity=in.readLong();String fluid=in.readUTF();
+            if(amount<0 || capacity<0 || fluid.length()>64)throw new IOException("Invalid slot");
+            result.add(new Slot(id,damage,amount,capacity,fluid));
+        }
+        return result;
+    }
     public byte[] encode() throws IOException {
         int count = Math.min(Math.min(nodes.size(), MAX_NODES),Math.max(0,totalNodes-page*PAGE_SIZE));
+        boolean extras=true;
         while (true) {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(bytes);
             out.writeByte(PROTOCOL); out.writeInt(window); out.writeInt(nonce);
             string(out,cpu); string(out,output); string(out,status);
             out.writeLong(elapsed); out.writeLong(total); out.writeLong(remaining);
-            out.writeBoolean(truncated || count < nodes.size()); out.writeShort(page);out.writeShort(totalNodes);out.writeShort(count);
+            out.writeBoolean(truncated || count < nodes.size() || !extras); out.writeShort(page);out.writeShort(totalNodes);out.writeShort(count);
             for (int i=0;i<count;i++) {
                 Node n=nodes.get(i);
                 string(out,n.label); string(out,n.reason); string(out,n.provider);
@@ -106,8 +159,15 @@ public final class Snapshot {
                     Machine m=n.machine;
                     out.writeInt(m.dim);out.writeInt(m.x);out.writeInt(m.y);out.writeInt(m.z);
                     out.writeLong(m.energy);out.writeLong(m.capacity);string(out,m.inventory);string(out,m.fluids);out.writeByte(m.hatches);
+                    slots(out,extras?m.slots:Collections.emptyList(),MAX_SLOTS);slots(out,extras?m.tanks:Collections.emptyList(),MAX_TANKS);
                 }
-                string(out,n.ingredients);string(out,n.products);string(out,n.fluidName);out.writeBoolean(n.recipeSafe);
+                string(out,n.ingredients);string(out,n.products);string(out,n.fluidName);
+                byte[] tag=n.details.tag;
+                boolean tagIncluded=extras && tag.length>0 && BoundedNbt.valid(tag);
+                out.writeBoolean(n.recipeSafe && (tag.length==0 || tagIncluded));
+                out.writeShort(tagIncluded?tag.length:0);if(tagIncluded)out.write(tag);
+                slots(out,extras?n.details.inputs:Collections.emptyList(),MAX_SLOTS);
+                slots(out,extras?n.details.outputs:Collections.emptyList(),MAX_SLOTS);
                 int cross=0;
                 for(int d:n.externalDependencies)if(d>=0 && d<totalNodes && d/PAGE_SIZE!=page && cross<MAX_EDGES)cross++;
                 out.writeByte(cross);
@@ -119,6 +179,7 @@ public final class Snapshot {
             }
             out.flush();
             if (bytes.size() <= MAX_BYTES) return bytes.toByteArray();
+            if(extras){extras=false;continue;} // Preserve every core node before dropping any optional detail.
             if(count==0) throw new IOException("Oversize header");
             count=Math.max(0,count-8);
         }
@@ -143,8 +204,11 @@ public final class Snapshot {
             if(dispatched<0 || returned<0 || destinations>8)throw new IOException("Invalid event counters");
             Machine machine=null;
             if(in.readBoolean())machine=new Machine(in.readInt(),in.readInt(),in.readInt(),in.readInt(),
-                in.readLong(),in.readLong(),in.readUTF(),in.readUTF(),in.readUnsignedByte());
+                in.readLong(),in.readLong(),in.readUTF(),in.readUTF(),in.readUnsignedByte(),slots(in,MAX_SLOTS),slots(in,MAX_TANKS));
             String ingredients=in.readUTF(),products=in.readUTF(),fluidName=in.readUTF();boolean recipeSafe=in.readBoolean();
+            int len=in.readUnsignedShort();if(len>BoundedNbt.MAX_BYTES || len>in.available())throw new IOException("Invalid NBT length");
+            byte[] tag=new byte[len];in.readFully(tag);if(len>0 && !BoundedNbt.valid(tag))throw new IOException("Invalid NBT");
+            Details details=new Details(tag,slots(in,MAX_SLOTS),slots(in,MAX_SLOTS));
             int cross=in.readUnsignedByte();
             if(cross>MAX_EDGES)throw new IOException("Too many external edges");
             int[] external=new int[cross];
@@ -159,7 +223,7 @@ public final class Snapshot {
                 deps[j]=in.readUnsignedShort();
                 if(deps[j]>=count || deps[j]==i) throw new IOException("Invalid edge");
             }
-            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine,dispatched,returned,destinations,route,external,ingredients,products,fluidName,recipeSafe));
+            nodes.add(new Node(label,reason,provider,runs,stored,active,pending,progress,max,itemId,damage,deps,machine,dispatched,returned,destinations,route,external,ingredients,products,fluidName,recipeSafe,details));
         }
         if(in.available()!=0) throw new IOException("Trailing snapshot bytes");
         return new Snapshot(window,nonce,cpu,output,status,elapsed,total,remaining,truncated,nodes,page,totalNodes);

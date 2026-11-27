@@ -7,6 +7,8 @@ import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.renderer.entity.RenderItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraftforge.fluids.FluidRegistry;
+import net.minecraftforge.fluids.Fluid;
 import org.lwjgl.input.Mouse;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.opengl.GL11;
@@ -21,7 +23,7 @@ public final class GraphRenderer {
     private static Snapshot.Node hovered;
     private static Snapshot current;
     private static int hoveredIndex=-1,selected=-1;
-    private static boolean needFit=true,animations=true,searching;
+    private static boolean needFit=true,animations=true,searching,detailView;
     private static String query="",notice="";
     private static long noticeUntil;
     private static int clickX,clickY;
@@ -33,7 +35,7 @@ public final class GraphRenderer {
     public static void reset(){query="";searching=false;resetPage();}
     public static void resetPage(){
         zoom=1;panX=12;panY=64;dragging=false;hovered=null;hoveredIndex=-1;selected=-1;
-        current=null;needFit=true;FLOW.reset();layoutSource=null;cachedLayout=null;
+        current=null;detailView=false;needFit=true;FLOW.reset();layoutSource=null;cachedLayout=null;
     }
     static void configure(boolean enabled){animations=enabled;}
     private static void toggleAnimation(){animations=!animations;ClientSettings.setAnimations(animations);}
@@ -45,7 +47,7 @@ public final class GraphRenderer {
         Snapshot.Node n=target();
         if(n==null){message("Select a crafting step first");return;}
         if(!NeiBridge.installed()){message("NEI is not installed");return;}
-        if(!n.recipeSafe){message("Exact recipe key unavailable (NBT or unsupported stack)");return;}
+        if(!n.recipeSafe){message("Exact recipe key unavailable (oversize NBT or unsupported stack)");return;}
         if(!NeiBridge.open(n,usage))message("NEI found no matching recipe");
     }
     static boolean key(char c,int key,Snapshot snapshot){
@@ -58,6 +60,8 @@ public final class GraphRenderer {
         if(key==Keyboard.KEY_PRIOR){if(snapshot!=null)ClientProxy.page(snapshot.page-1);return true;}
         if(key==Keyboard.KEY_NEXT){if(snapshot!=null)ClientProxy.page(snapshot.page+1);return true;}
         if(key==Keyboard.KEY_HOME){needFit=true;return true;}
+        if(key==Keyboard.KEY_P){if(target()!=null){if(hoveredIndex>=0)selected=hoveredIndex;detailView=!detailView;}return true;}
+        if(detailView && key==Keyboard.KEY_ESCAPE){detailView=false;return true;}
         if(key==Keyboard.KEY_R){recipe(false);return true;}
         if(key==Keyboard.KEY_U){recipe(true);return true;}
         if(key==Keyboard.KEY_F){searching=true;return true;}
@@ -91,6 +95,7 @@ public final class GraphRenderer {
         }
         if(Mouse.getEventButton()==1 && Mouse.getEventButtonState() && hovered!=null && hovered.machine!=null)
             WorldHighlight.select(hovered.machine);
+        if(detailView){if(Mouse.getEventButton()==0 && Mouse.getEventButtonState())detailView=false;return;}
         if(Mouse.getEventButton()==0){
             if(Mouse.getEventButtonState()){
                 if(y>=4 && y<=18){
@@ -106,6 +111,7 @@ public final class GraphRenderer {
                 if(panelWidth>0 && x>=mc.currentScreen.width-panelWidth){
                     if(y>=88 && y<102){recipe(false);return;}
                     if(y>=106 && y<120){recipe(true);return;}
+                    if(y>=124 && y<138){detailView=true;return;}
                     Snapshot.Node n=target();int link=(y-184)/12;
                     if(y>=184 && n!=null && link<n.externalDependencies.length){ClientProxy.page(n.externalDependencies[link]/Snapshot.PAGE_SIZE);return;}
                     return;
@@ -242,10 +248,9 @@ public final class GraphRenderer {
             text(f,"Step #"+(data.page*Snapshot.PAGE_SIZE+selected+1),px+5,62,0xA9D8FF,panelWidth-10);
             text(f,n.label,px+5,74,0xFFFFFF,panelWidth-10);
             button(f,px+5,88,panelWidth-10,"Recipes (R)");button(f,px+5,106,panelWidth-10,"Usages (U)");
-            text(f,"Pattern inputs:",px+5,124,0xA9D8FF,panelWidth-10);
-            f.drawSplitString(n.ingredients,px+5,136,panelWidth-10,0xE1EBF4);
-            text(f,"Pattern outputs:",px+5,158,0xA9D8FF,panelWidth-10);
-            text(f,n.products,px+5,170,0xE1EBF4,panelWidth-10);
+            button(f,px+5,124,panelWidth-10,"Pattern / machine (P)");
+            text(f,"Inputs: "+n.ingredients,px+5,142,0xE1EBF4,panelWidth-10);
+            text(f,"Outputs: "+n.products,px+5,158,0xE1EBF4,panelWidth-10);
             for(int i=0;i<n.externalDependencies.length && 196+i*12<h-16;i++){
                 int d=n.externalDependencies[i];
                 text(f,(i+1)+": Step #"+(d+1)+" (page "+(d/Snapshot.PAGE_SIZE+1)+")",px+5,184+i*12,0xA9D8FF,panelWidth-10);
@@ -266,7 +271,49 @@ public final class GraphRenderer {
             Gui.drawRect(tx,ty,tx+tw,ty+90,0xF01B2837);
             for(int i=0;i<lines.size();i++)text(f,lines.get(i),tx+5,ty+4+i*12,0xE1EBF4,tw-10);
         }
+        if(detailView && data!=null && selected>=0 && selected<data.nodes.size())drawDetails(w,h,f,mc,data.nodes.get(selected),mx,my);
         Gui.drawRect(0,h-16,w,h,0xFF1B2837);
-        text(f,"PgUp/PgDn: pages | Click: details | Right-click: highlight | CPU-wide counts",5,h-12,0xA9BAC9,w-10);
+        text(f,"PgUp/PgDn: pages | P: pattern/machine | R/U: NEI | CPU-wide counts",5,h-12,0xA9BAC9,w-10);
+    }
+    private static void drawDetails(int w,int h,FontRenderer f,Minecraft mc,Snapshot.Node n,int mx,int my){
+        int x=Math.max(5,(w-300)/2),right=Math.min(w-5,x+300),y=58;
+        Gui.drawRect(x,y,right,h-18,0xFF202B38);
+        text(f,n.label+" | click / P to close",x+6,y+5,0xFFFFFF,right-x-12);
+        text(f,"Encoded pattern (sample, not live recipe)",x+6,y+19,0xA9D8FF,right-x-12);
+        drawSlots(f,mc,n.details.inputs,x+6,y+31,right-6,mx,my);
+        drawSlots(f,mc,n.details.outputs,x+6,y+65,right-6,mx,my);
+        if(n.machine!=null && h>208){
+            text(f,"Observed machine inventory / tanks (sample)",x+6,y+99,0xA9D8FF,right-x-12);
+            drawSlots(f,mc,n.machine.slots,x+6,y+111,right-6,mx,my);
+            if(h>240)drawSlots(f,mc,n.machine.tanks,x+6,y+145,right-6,mx,my);
+        }
+    }
+    private static void drawSlots(FontRenderer f,Minecraft mc,List<Snapshot.Slot> entries,int x,int y,int right,int mx,int my){
+        if(entries.isEmpty()){text(f,"No sampled entries",x,y+6,0xA9BAC9,right-x);return;}
+        for(int i=0;i<entries.size() && x+28<=right;i++,x+=31){
+            Snapshot.Slot s=entries.get(i);
+            Gui.drawRect(x,y,x+28,y+28,0xFF141C26);Gui.drawRect(x+1,y+1,x+27,y+27,0xFF34485B);
+            Item item=s.id<0?null:Item.getItemById(s.id);
+            String name="";
+            if(item!=null){
+                ItemStack stack=new ItemStack(item,1,s.damage);
+                net.minecraft.client.renderer.RenderHelper.enableGUIStandardItemLighting();
+                ITEMS.renderItemAndEffectIntoGUI(f,mc.getTextureManager(),stack,x+6,y+2);
+                net.minecraft.client.renderer.RenderHelper.disableStandardItemLighting();
+                name=stack.getDisplayName();
+            }else if(!s.fluid.isEmpty() || s.capacity>0){
+                Fluid fluid=FluidRegistry.getFluid(s.fluid);
+                int color=fluid==null?0xFF4595CB:0xFF000000|(fluid.getColor()&0xFFFFFF);
+                int bar=s.capacity>0?(int)(20*Math.min(1.0,(double)s.amount/s.capacity)):20;
+                Gui.drawRect(x+5,y+23-bar,x+23,y+23,color);
+                name=s.fluid.isEmpty()?"Empty tank":s.fluid;
+            }
+            text(f,Long.toString(s.amount),x+2,y+19,0xFFFFFF,24);
+            if(mx>=x && mx<x+28 && my>=y && my<y+28 && !name.isEmpty()){
+                int tx=Math.min(right-100,x);
+                Gui.drawRect(tx,y-12,Math.min(right,tx+160),y,0xFF101820);
+                text(f,name,tx+2,y-10,0xFFFFFF,Math.min(right-tx-4,156));
+            }
+        }
     }
 }
