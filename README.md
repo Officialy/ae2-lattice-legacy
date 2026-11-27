@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="128" align="right">
+
 # Lattice for AE2
 
 A live, animated **crafting tree** for Applied Energistics 2 crafting CPUs.
