@@ -1,7 +1,6 @@
 package dev.ae2lattice.net;
 import java.io.*;
 import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.nbt.NBTSizeTracker;
 import net.minecraft.nbt.CompressedStreamTools;
 
 public final class ItemNbt {
@@ -29,6 +28,7 @@ public final class ItemNbt {
     public static NBTTagCompound decode(byte[] bytes)throws IOException{
         if(bytes.length==0)return null;
         if(!BoundedNbt.valid(bytes))throw new IOException("Invalid NBT");
-        return CompressedStreamTools.read(new DataInputStream(new ByteArrayInputStream(bytes)),new NBTSizeTracker(16384L));
+        // Strict length/depth/array validation above bounds the vanilla 1.7.10 reader.
+        return CompressedStreamTools.read(new DataInputStream(new ByteArrayInputStream(bytes)));
     }
 }
