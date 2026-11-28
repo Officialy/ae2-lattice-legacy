@@ -1,183 +1,185 @@
 package dev.ae2lattice.server;
 
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
+import appeng.api.config.SecurityPermissions;
+import appeng.api.networking.IGrid;
+import appeng.api.networking.IGridNode;
+import appeng.api.networking.security.ISecurityGrid;
+import appeng.api.util.NamedDimensionalCoord;
+import appeng.helpers.IInterfaceHost;
+import appeng.me.helpers.IGridProxyable;
+import appeng.util.Platform;
+import appeng.parts.misc.PartStorageBus;
+import appeng.tile.crafting.TileMolecularAssembler;
+import cpw.mods.fml.common.Loader;
+import net.minecraft.tileentity.TileEntityFurnace;
+import dev.ae2lattice.net.Snapshot;
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.tileentity.TileEntity;
+import net.minecraft.world.World;
+import net.minecraftforge.common.DimensionManager;
+import net.minecraftforge.common.util.ForgeDirection;
+import java.util.*;
 
-import org.jetbrains.annotations.Nullable;
-
-import appeng.api.networking.crafting.ICraftingProvider;
-import appeng.helpers.patternprovider.PatternProviderLogic;
-import dev.ae2lattice.mixin.PatternProviderLogicAccessor;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraftforge.common.capabilities.ForgeCapabilities;
-
-/**
- * Figures out which block in the world a crafting provider is actually feeding.
- * Read-only: only looks at block states, block entities and capabilities.
- */
-public final class MachineResolver {
-
-    public record Target(BlockPos pos, ResourceKey<Level> dim, ItemStack icon, Component name) {}
-
-    public static List<Target> resolve(ICraftingProvider provider) {
-        var out = new ArrayList<Target>(2);
-        try {
-            if (provider instanceof PatternProviderLogic ppl) {
-                var host = ((PatternProviderLogicAccessor) (Object) ppl).ae2lattice$getHost();
-                BlockEntity be = host.getBlockEntity();
-                if (be == null || be.getLevel() == null) return out;
-                Level level = be.getLevel();
-                BlockPos pos = be.getBlockPos();
-                for (Direction dir : host.getTargets()) {
-                    BlockPos adj = pos.relative(dir);
-                    if (!level.isLoaded(adj)) continue;
-                    BlockEntity abe = level.getBlockEntity(adj);
-                    if (abe == null) continue;
-                    var side = dir.getOpposite();
-                    // provider -> ME interface of a subnet -> storage bus(es) -> the real machine
-                    var viaSubnet = throughSubnet(level, abe, side, ppl.getGrid());
-                    if (!viaSubnet.isEmpty()) {
-                        out.addAll(viaSubnet);
-                        continue;
+/** Read-only, bounded search from actual dispatch targets. Never crosses an unauthorized grid. */
+final class MachineResolver {
+    static final class Budget {
+        int tiles=128,nodes=128,grids=8;
+    }
+    static final class Result {
+        final MachineReading reading; final String route;
+        Result(MachineReading reading,String route){this.reading=reading;this.route=route;}
+    }
+    private static boolean allowed(IGrid grid,EntityPlayerMP player){
+        if(grid==null)return false;
+        ISecurityGrid security=grid.getCache(ISecurityGrid.class);
+        return security!=null && security.hasPermission(player,SecurityPermissions.CRAFT);
+    }
+    static TileEntity loaded(NamedDimensionalCoord pos,Budget budget){
+        if(budget.tiles--<=0)return null;
+        World w=DimensionManager.getWorld(pos.getDimension());
+        return w!=null && w.blockExists(pos.x,pos.y,pos.z)?w.getTileEntity(pos.x,pos.y,pos.z):null;
+    }
+    static Result resolve(JobTrack.Dispatch dispatch,NamedDimensionalCoord provider,IGrid root,
+                          EntityPlayerMP player,Budget budget){
+        if(provider==null && (dispatch==null || dispatch.destinations.isEmpty()))return null;
+        Set<TileEntity> candidates=Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<IGrid> visited=Collections.newSetFromMap(new IdentityHashMap<>());
+        visited.add(root);
+        boolean exact=false,subnet=false,partial=false;
+        if(dispatch!=null && !dispatch.destinations.isEmpty()){
+            exact=true;partial=dispatch.partial;
+            for(NamedDimensionalCoord pos:dispatch.destinations){
+                TileEntity tile=loaded(pos,budget);
+                if(tile==null){partial=true;continue;}
+                if(isMachine(tile)){candidates.add(tile);continue;}
+                boolean found=false;
+                for(IInterfaceHost host:interfaces(tile)){
+                    IGrid grid=grid(host);
+                    if(grid!=null && grid!=root && allowed(grid,player)){
+                        subnet=true;found=true;
+                        walk(grid,player,budget,visited,candidates,0);
                     }
-                    boolean accepts = abe.getCapability(ForgeCapabilities.ITEM_HANDLER, side).isPresent()
-                            || abe.getCapability(ForgeCapabilities.FLUID_HANDLER, side).isPresent();
-                    if (!accepts) continue;
-                    out.add(describe(level, followMultiblock(abe).orElse(adj)));
                 }
-                if (out.isEmpty()) out.add(describe(level, pos)); // fall back to the provider itself
-            } else {
-                // Non-AE2 providers, e.g. GregTech's ME Pattern Buffer (a multiblock part).
-                var lvl = invoke(provider, "getLevel");
-                var p = invoke(provider, "getPos");
-                if (lvl instanceof Level level && p instanceof BlockPos pos) {
-                    var ctrl = controllerOf(provider);
-                    out.add(describe(level, ctrl != null ? ctrl : pos));
-                }
+                if(!found)partial=true;
             }
-        } catch (Throwable ignored) {
-            // never let observation break crafting
+        }else if(provider!=null){
+            TileEntity tile=loaded(provider,budget);
+            if(tile!=null && isMachine(tile))candidates.add(tile);
+            else if(tile!=null)adjacent(tile,dispatch==null?0:dispatch.targetMask,budget,candidates);
         }
-        return out;
-    }
-
-    /**
-     * Subnet setups: the provider feeds an ME interface on a separate network, whose storage buses face the actual
-     * machine (e.g. an EBF's input bus + fluid hatch). Follow that, read-only, to the blocks those buses face.
-     */
-    private static List<Target> throughSubnet(Level level, BlockEntity adjacent, Direction faceTowardProvider,
-            @Nullable appeng.api.networking.IGrid providerGrid) {
-        Object candidate = adjacent;
-        if (adjacent instanceof appeng.api.parts.IPartHost ph) {
-            var part = ph.getPart(faceTowardProvider);
-            if (part != null) candidate = part;
-        }
-        if (!(candidate instanceof appeng.helpers.InterfaceLogicHost)
-                || !(candidate instanceof appeng.api.networking.security.IActionHost ah)) return List.of();
-        var node = ah.getActionableNode();
-        var grid = node == null ? null : node.getGrid();
-        if (grid == null || grid == providerGrid) return List.of(); // same network: not a subnet setup
-        Component ifaceName = customName(candidate); // e.g. renamed in an anvil: "Kanthal EBF"
-        var res = new java.util.LinkedHashMap<BlockPos, Target>();
-        for (var cls : grid.getMachineClasses()) {
-            if (!appeng.parts.storagebus.StorageBusPart.class.isAssignableFrom(cls)) continue;
-            for (var n : grid.getMachineNodes(cls)) {
-                if (!(n.getOwner() instanceof appeng.parts.storagebus.StorageBusPart bus)) continue;
-                var busBe = bus.getBlockEntity();
-                if (busBe == null || bus.getSide() == null) continue;
-                BlockPos tpos = busBe.getBlockPos().relative(bus.getSide());
-                if (!level.isLoaded(tpos)) continue;
-                var tbe = level.getBlockEntity(tpos);
-                BlockPos fin = tbe != null ? followMultiblock(tbe).orElse(tpos) : tpos;
-                res.computeIfAbsent(fin.immutable(), p -> {
-                    var t = describe(level, p);
-                    return ifaceName != null ? new Target(t.pos(), t.dim(), t.icon(), ifaceName) : t;
-                });
-                if (res.size() >= 8) break;
-            }
-        }
-        return new ArrayList<>(res.values());
-    }
-
-    private static Target describe(Level level, BlockPos pos) {
-        var state = level.getBlockState(pos);
-        ItemStack icon;
-        try {
-            icon = state.getBlock().getCloneItemStack(level, pos, state);
-        } catch (Throwable t) {
-            icon = ItemStack.EMPTY;
-        }
-        if (icon.isEmpty()) icon = new ItemStack(state.getBlock());
-        Component name = icon.isEmpty() ? state.getBlock().getName() : icon.getHoverName();
-        // a custom (anvil) name on the block wins
-        var custom = customName(level.getBlockEntity(pos));
-        if (custom != null) name = custom;
-        return new Target(pos.immutable(), level.dimension(), icon.copyWithCount(1), name);
-    }
-
-    /** Custom name given in an anvil (blocks, AE2 parts, GregTech machines), if any. */
-    @Nullable
-    private static Component customName(@Nullable Object o) {
-        if (o == null) return null;
-        if (o instanceof net.minecraft.world.Nameable n && n.hasCustomName()) return n.getCustomName();
-        // AE2 parts / GT machines expose it without implementing Nameable
-        if (invoke(o, "hasCustomName") instanceof Boolean b && b && invoke(o, "getCustomName") instanceof Component c) return c;
-        var mm = invoke(o, "getMetaMachine");
-        if (mm != null && invoke(mm, "hasCustomName") instanceof Boolean b2 && b2
-                && invoke(mm, "getCustomName") instanceof Component c2) return c2;
-        return null;
-    }
-
-    /** GregTech: if this block is a multiblock part, return the controller's position. */
-    private static Optional<BlockPos> followMultiblock(BlockEntity be) {
-        var mm = invoke(be, "getMetaMachine");
-        if (mm == null) return Optional.empty();
-        return Optional.ofNullable(controllerOf(mm));
-    }
-
-    @Nullable
-    private static BlockPos controllerOf(Object machine) {
-        var ctrls = invoke(machine, "getControllers");
-        if (ctrls instanceof Collection<?> c && !c.isEmpty()) {
-            Object ctrl = c.iterator().next();
-            Object self = invoke(ctrl, "self");
-            Object p = invoke(self != null ? self : ctrl, "getPos");
-            if (p instanceof BlockPos bp) return bp;
-        }
-        return null;
-    }
-
-    private static final Map<String, Optional<Method>> METHODS = new ConcurrentHashMap<>();
-
-    @Nullable
-    private static Object invoke(@Nullable Object target, String name) {
-        if (target == null) return null;
-        var cls = target.getClass();
-        var m = METHODS.computeIfAbsent(cls.getName() + "#" + name, k -> {
-            try {
-                return Optional.of(cls.getMethod(name));
-            } catch (Throwable t) {
-                return Optional.empty();
-            }
-        });
-        if (m.isEmpty()) return null;
-        try {
-            return m.get().invoke(target);
-        } catch (Throwable t) {
+        if(candidates.size()!=1 || partial || budget.tiles<0 || budget.nodes<0 || budget.grids<0)
             return null;
+        MachineReading reading=read(candidates.iterator().next(),player,exact && !subnet);
+        if(reading==null)return null;
+        return new Result(reading,subnet?"Authorized subnet candidate":exact?"Observed receiving tile":"Provider candidate");
+    }
+    private static boolean isMachine(TileEntity tile){
+        return tile instanceof TileMolecularAssembler || tile instanceof TileEntityFurnace ||
+            (Loader.isModLoaded("gregtech") && GregTechProbe.isMachine(tile));
+    }
+    private static MachineReading read(TileEntity tile,EntityPlayerMP player,boolean observedDirect){
+        if(tile instanceof TileMolecularAssembler){
+            TileMolecularAssembler assembler=(TileMolecularAssembler)tile;
+            try{if(!allowed(assembler.getProxy().getGrid(),player))return null;}
+            catch(Exception ex){return null;}
+            int progress=Math.max(0,Math.min(100,assembler.getCraftingProgress()));
+            return new MachineReading(!assembler.isPowered()?"No power":progress>0?"Crafting":"Idle",progress,100,
+                basic(tile));
+        }
+        if(tile instanceof TileEntityFurnace){
+            // Vanilla has no owner identity; only show an observed, nearby and usable furnace.
+            if(!observedDirect || tile.getWorldObj()!=player.worldObj)return null;
+            TileEntityFurnace furnace=(TileEntityFurnace)tile;
+            if(!furnace.isUseableByPlayer(player))return null;
+            int progress=Math.max(0,Math.min(200,furnace.furnaceCookTime));
+            return new MachineReading(furnace.isBurning()?"Burning":"Not burning",progress,200,basic(tile));
+        }
+        return Loader.isModLoaded("gregtech")?GregTechProbe.read(tile,player):null;
+    }
+    private static Snapshot.Machine basic(TileEntity tile){
+        // No inventory contents for basic probes; EU is not an applicable measurement.
+        return new Snapshot.Machine(tile.getWorldObj().provider.dimensionId,tile.xCoord,tile.yCoord,tile.zCoord,-1,-1,"","",0);
+    }
+    private static List<IInterfaceHost> interfaces(TileEntity tile){
+        List<IInterfaceHost> result=new ArrayList<>();
+        if(tile instanceof IInterfaceHost)result.add((IInterfaceHost)tile);
+        for(ForgeDirection d:ForgeDirection.VALID_DIRECTIONS){
+            Object part=Platform.getPartFromTE(tile,d);
+            if(part instanceof IInterfaceHost)result.add((IInterfaceHost)part);
+        }
+        return result;
+    }
+    private static IGrid grid(IInterfaceHost host){
+        try{return host.getInterfaceDuality().getProxy().getGrid();}
+        catch(Exception ignored){return null;}
+    }
+    private static void adjacent(TileEntity tile,int mask,Budget budget,Set<TileEntity> candidates){
+        World w=tile.getWorldObj();
+        for(ForgeDirection d:ForgeDirection.VALID_DIRECTIONS){
+            if(mask!=0 && (mask&(1<<d.ordinal()))==0)continue;
+            if(budget.tiles--<=0)return;
+            int x=tile.xCoord+d.offsetX,y=tile.yCoord+d.offsetY,z=tile.zCoord+d.offsetZ;
+            if(!w.blockExists(x,y,z))continue;
+            TileEntity target=w.getTileEntity(x,y,z);
+            if(isMachine(target))candidates.add(target);
         }
     }
-
-    private MachineResolver() {}
+    private static void walk(IGrid grid,EntityPlayerMP player,Budget budget,Set<IGrid> visited,
+                             Set<TileEntity> candidates,int depth){
+        if(depth>=2 || !allowed(grid,player) || !visited.add(grid))return;
+        if(budget.grids--<=0)return;
+        for(IGridNode node:grid.getNodes()){
+            if(budget.nodes--<=0)return;
+            Object host=node.getMachine();
+            // Direct AE-capable GT hatches expose an actual grid location.
+            if(host instanceof IGridProxyable){
+                try{
+                    appeng.api.util.DimensionalCoord c=((IGridProxyable)host).getLocation();
+                    if(c!=null){
+                        TileEntity tile=loaded(new NamedDimensionalCoord(c,""),budget);
+                        if(isMachine(tile))candidates.add(tile);
+                    }
+                }catch(RuntimeException ignored){}
+            }
+            // A storage bus can point at a machine or another interface-backed subnet.
+            // Inspect only the physical face already present in the authorized grid.
+            if(host instanceof PartStorageBus){
+                PartStorageBus bus=(PartStorageBus)host;
+                TileEntity tile=bus.getTile();
+                ForgeDirection d=bus.getSide();
+                if(tile!=null && tile.getWorldObj()!=null && d!=ForgeDirection.UNKNOWN){
+                    World w=tile.getWorldObj();
+                    if(budget.tiles--<=0)return;
+                    int x=tile.xCoord+d.offsetX,y=tile.yCoord+d.offsetY,z=tile.zCoord+d.offsetZ;
+                    if(w.blockExists(x,y,z)){
+                        TileEntity target=w.getTileEntity(x,y,z);
+                        if(isMachine(target))candidates.add(target);
+                        else if(target!=null)for(IInterfaceHost next:interfaces(target)){
+                            IGrid other=grid(next);
+                            if(other!=grid)walk(other,player,budget,visited,candidates,depth+1);
+                        }
+                    }
+                }
+            }
+            if(!(host instanceof IInterfaceHost))continue;
+            IInterfaceHost iface=(IInterfaceHost)host;
+            TileEntity tile=iface.getTileEntity();
+            if(tile==null || tile.getWorldObj()==null)continue;
+            World w=tile.getWorldObj();
+            if(!w.blockExists(tile.xCoord,tile.yCoord,tile.zCoord))continue;
+            for(ForgeDirection d:iface.getTargets()){
+                if(d==ForgeDirection.UNKNOWN)continue;
+                if(budget.tiles--<=0)return;
+                int x=tile.xCoord+d.offsetX,y=tile.yCoord+d.offsetY,z=tile.zCoord+d.offsetZ;
+                if(!w.blockExists(x,y,z))continue;
+                TileEntity target=w.getTileEntity(x,y,z);
+                if(target==null)continue;
+                if(isMachine(target))candidates.add(target);
+                else for(IInterfaceHost next:interfaces(target)){
+                    IGrid other=grid(next);
+                    if(other!=grid)walk(other,player,budget,visited,candidates,depth+1);
+                }
+            }
+        }
+    }
 }

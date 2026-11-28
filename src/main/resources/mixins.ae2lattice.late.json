@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.ae2lattice.mixin",
+  "refmap": "mixins.ae2lattice.refmap.json",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [],
+  "client": [],
+  "server": [],
+  "injectors": {"defaultRequire": 1}
+}

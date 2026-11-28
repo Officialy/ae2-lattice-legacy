@@ -1,259 +1,162 @@
 package dev.ae2lattice.server;
 
-import java.lang.ref.WeakReference;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
-
-import org.jetbrains.annotations.Nullable;
-
-import appeng.api.stacks.AEItemKey;
-import appeng.api.stacks.AEKey;
-import net.minecraft.world.item.ItemStack;
-import appeng.api.stacks.GenericStack;
-import appeng.api.stacks.KeyCounter;
+import appeng.api.networking.crafting.CraftingItemList;
+import appeng.api.networking.crafting.ICraftingPatternDetails;
+import appeng.api.storage.data.IAEStack;
+import appeng.api.storage.data.IAEFluidStack;
+import appeng.api.util.NamedDimensionalCoord;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
-import appeng.me.service.CraftingService;
-import dev.ae2lattice.mixin.CraftingCpuLogicAccessor;
-import dev.ae2lattice.mixin.ExecutingCraftingJobAccessor;
-import dev.ae2lattice.mixin.TaskProgressAccessor;
-import dev.ae2lattice.net.SnapshotData;
-import dev.ae2lattice.net.SnapshotData.KeyState;
-import dev.ae2lattice.net.SnapshotData.MachineInfo;
-import dev.ae2lattice.net.SnapshotData.MachineState;
-import dev.ae2lattice.net.SnapshotData.PatternInfo;
-import dev.ae2lattice.net.SnapshotData.PatternState;
+import cpw.mods.fml.common.Loader;
+import dev.ae2lattice.mixin.CpuAccessor;
+import dev.ae2lattice.mixin.TaskAccessor;
+import dev.ae2lattice.net.Snapshot;
+import dev.ae2lattice.net.ItemNbt;
+import net.minecraft.nbt.NBTTagCompound;
+import java.util.*;
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.tileentity.TileEntity;
+import net.minecraft.world.World;
+import net.minecraftforge.common.DimensionManager;
+import net.minecraftforge.common.util.ForgeDirection;
 
 final class SnapshotBuilder {
-
-    @Nullable
-    static SnapshotData build(@Nullable CraftingCPUCluster cpu, ServerHooks.Subscription sub) {
-        long now = ServerHooks.tick();
-        var job = cpu == null ? null : ((CraftingCpuLogicAccessor) (Object) cpu.craftingLogic).ae2lattice$getJob();
-        if (cpu == null || job == null) {
-            sub.cpu = new WeakReference<>(cpu);
-            sub.jobUid = 0;
-            sub.structureVersion = -1;
-            // "no job" only needs to be repeated occasionally
-            if (now - sub.lastEmptySentTick < 20) return null;
-            sub.lastEmptySentTick = now;
-            var empty = new SnapshotData();
-            empty.emptyReason = cpu == null ? SnapshotData.EMPTY_NO_CPU : SnapshotData.EMPTY_NO_JOB;
-            var fin = cpu == null ? null : LatticeTracker.lastFinished(cpu);
-            if (fin != null && now - fin.tick() < 20 * 60 * 30) { // remember it for 30 minutes
-                empty.finished = new SnapshotData.Finished(fin.id(), fin.success(), fin.output(), fin.remaining(),
-                        fin.elapsedNanos(), (int) Math.min(Integer.MAX_VALUE, now - fin.tick()), fin.steps(),
-                        fin.machines());
-            }
-            sub.logState(cpu == null ? "no CPU selected" : "CPU has no job");
-            return empty;
+    private static final int PROBE_LIMIT=24;
+    static Snapshot build(CraftingCPUCluster cpu,EntityPlayerMP player,int window,int nonce,int requestedPage){
+        if(!cpu.isBusy()) {
+            JobTrack.clear(cpu);
+            JobTrack.Finished done=JobTrack.finished(cpu);
+            if(done!=null)return new Snapshot(window,nonce,cpu.getName(),done.output,done.status,
+                done.elapsed,done.total,done.remaining,false,Collections.emptyList());
+            return new Snapshot(window,nonce,cpu.getName(),"","Idle",0,0,0,false,Collections.emptyList());
         }
-        sub.lastEmptySentTick = Long.MIN_VALUE / 2;
-
-        var logic = cpu.craftingLogic;
-        var ja = (ExecutingCraftingJobAccessor) (Object) job;
-        var jt = LatticeTracker.get(cpu);
-        if (jt == null) return null;
-
-        var tasks = ja.ae2lattice$getTasks();
-        for (var d : tasks.keySet()) jt.track(d);
-        recoverUnseenSteps(cpu, jt);
-
-        var d = new SnapshotData();
-        d.hasJob = true;
-        d.jobUid = jt.uid;
-        d.structureVersion = jt.structureVersion;
-        d.finalOutput = ja.ae2lattice$getFinalOutput();
-        d.remainingAmount = ja.ae2lattice$getRemainingAmount();
-        var tt = logic.getElapsedTimeTracker();
-        d.elapsedNanos = tt.getElapsedTime();
-        d.startItems = tt.getStartItemCount();
-        d.remainingItems = tt.getRemainingItemCount();
-
-        boolean newView = sub.cpu.get() != cpu || sub.jobUid != jt.uid;
-        if (newView || sub.structureVersion != jt.structureVersion) {
-            var structure = new ArrayList<PatternInfo>(jt.patterns.size());
-            for (var pt : jt.patterns.values()) structure.add(describe(pt));
-            d.structure = structure;
-            sub.structureVersion = jt.structureVersion;
-        }
-        if (newView) {
-            sub.cpu = new WeakReference<>(cpu);
-            sub.jobUid = jt.uid;
-            sub.eventSeq = jt.lastSeq(); // don't replay history on open
-        }
-
-        var server = cpu.getLevel() != null ? cpu.getLevel().getServer() : null;
-        Set<AEKey> keys = new LinkedHashSet<>();
-        for (var pt : jt.patterns.values()) {
-            var tp = tasks.get(pt.details);
-            long remainingRuns = tp == null ? 0 : ((TaskProgressAccessor) tp).ae2lattice$getValue();
-
-            // AE2's own bookkeeping: how much of this step's output is currently out in machines.
-            var primary = pt.details.getPrimaryOutput();
-            long inMachines = primary == null ? 0 : logic.getWaitingFor(primary.what());
-            if (inMachines <= 0) {
-                pt.inflight.clear(); // nothing can be in flight; drop stale attribution data
-                pt.lastOutputTick = now; // the "no output since" clock only runs while something is out
+        JobTrack.Topology topology=JobTrack.topology(cpu);
+        List<ICraftingPatternDetails> patterns=topology.patterns;
+        Map<ICraftingPatternDetails,CraftingCPUCluster.TaskProgress> tasks=((CpuAccessor)(Object)cpu).lattice$getTasks();
+        boolean truncated=patterns.size()>=Snapshot.MAX_TRACKED || tasks.size()>patterns.size();
+        int count=patterns.size(),page=Snapshot.clampPage(requestedPage,count);
+        int start=page*Snapshot.PAGE_SIZE,end=Math.min(count,start+Snapshot.PAGE_SIZE);
+        Map<IAEStack<?>,List<Integer>> producers=topology.producers;
+        List<Snapshot.Node> nodes=new ArrayList<>();
+        int probes=0;
+        MachineResolver.Budget budget=new MachineResolver.Budget();
+        for(int i=start;i<end;i++){
+            ICraftingPatternDetails pattern=patterns.get(i);
+            Set<Integer> deps=new LinkedHashSet<>();
+            for(IAEStack<?> input:pattern.getCondensedAEInputs()) if(input!=null){
+                List<Integer> candidates=producers.get(key(input));
+                if(candidates!=null) for(int idx:candidates) if(idx!=i) deps.add(idx);
             }
-
-            if ((pt.machines.isEmpty() && now - pt.lastScanTick > 100) || now - pt.lastScanTick > 1200) {
-                pt.lastScanTick = now;
-                scanProviders(cpu, pt);
-            }
-
-            // Which CPU does AE2 hand this item's outputs to next? (its own order: first CPU still waiting for it)
-            var servedBy = primary == null || inMachines <= 0 ? null : firstWaitingCpu(cpu, primary.what());
-            boolean otherCpuFirst = servedBy != null && servedBy != cpu;
-
-            // Ask each machine about itself. Nothing here is estimated.
-            var machines = new ArrayList<MachineInfo>(pt.machines.size());
-            for (var m : pt.machines.values()) {
-                var r = MachineProbe.probe(server, m.dim, m.pos);
-                var state = r.state();
-                var prov = m.provider.get();
-                // The pattern provider holding items it couldn't insert is a fact about the provider, not a guess.
-                if ((state == MachineState.IDLE || state == MachineState.UNKNOWN) && prov != null && prov.isBusy()) {
-                    state = MachineState.INPUT_FULL;
+            if(deps.size()>Snapshot.MAX_EDGES) truncated=true;
+            int[] edges=deps.stream().filter(d->d>=start && d<end).limit(Snapshot.MAX_EDGES).mapToInt(d->d-start).toArray();
+            int[] external=deps.stream().filter(d->d<start || d>=end).limit(Snapshot.MAX_EDGES).mapToInt(Integer::intValue).toArray();
+            IAEStack<?> out=first(pattern.getCondensedAEOutputs());
+            CraftingCPUCluster.TaskProgress task=tasks.get(pattern);
+            long runs=task==null?0:((TaskAccessor)(Object)task).lattice$getRemaining();
+            String label=out==null?"Input-only pattern":out.getDisplayName();
+            long stored=0,active=0,pending=0;
+            String reason="",provider="";
+            int progress=-1,max=-1,id=-1,damage=0;
+            Snapshot.Machine machine=null;
+            long dispatched=0,returned=0;int destinations=0;String route="",fluidName="";boolean recipeSafe=false;byte[] tag=new byte[0];
+            if(out!=null){
+                stored=cpu.getStackAmount(out,CraftingItemList.STORAGE);
+                active=cpu.getStackAmount(out,CraftingItemList.ACTIVE);
+                pending=cpu.getStackAmount(out,CraftingItemList.PENDING);
+                if(pending>0) reason=cpu.getScheduledReason(out).name();
+                ItemStack icon=out.getItemStackForNEI();
+                if(icon!=null){id=Item.getIdFromItem(icon.getItem());damage=icon.getItemDamage();
+                    if(out.isItem()){
+                        byte[] encoded=ItemNbt.encode(icon.getTagCompound());
+                        if(encoded!=null && (!out.hasTagCompound() || icon.hasTagCompound())){tag=encoded;recipeSafe=true;}
+                    }
                 }
-                var target = targetOf(pt, r);
-                // The machine may be running exactly this recipe - but if AE2 gives the result to another CPU
-                // first, it's not working for *this* CPU.
-                if (otherCpuFirst && target != SnapshotData.Target.OTHER) target = SnapshotData.Target.OTHER;
-                var busyWith = ItemStack.EMPTY;
-                if (target == SnapshotData.Target.OTHER) {
-                    if (!r.making().isEmpty()) busyWith = new ItemStack(r.making().iterator().next());
-                    else if (r.consuming() != null) busyWith = new ItemStack(r.consuming());
+                if(out instanceof IAEFluidStack){
+                    IAEFluidStack fluid=(IAEFluidStack)out;
+                    if(fluid.getFluid()!=null){
+                        fluidName=fluid.getFluid().getName();
+                        byte[] encoded=ItemNbt.encode(fluid.getFluidStack().tag);
+                        recipeSafe=encoded!=null && fluidName.length()<=64 && (!out.hasTagCompound() || fluid.getFluidStack().tag!=null);
+                        if(recipeSafe)tag=encoded;
+                    }
                 }
-                // Slot contents only for steps that still have work (keeps packets small on big jobs).
-                var inv = (inMachines > 0 || remainingRuns > 0)
-                        ? InventoryReader.read(server, m.dim, m.pos) : List.<SnapshotData.InvGroup>of();
-                machines.add(new MachineInfo(m.pos, m.dim.location(), m.icon, m.name, state,
-                        r.progress(), r.maxProgress(), r.reason(), target, busyWith, inv,
-                        (inMachines > 0 || remainingRuns > 0) ? r.recipe() : List.<SnapshotData.InvGroup>of(),
-                        r.recipeId()));
-            }
-
-            long since = inMachines > 0 ? now - pt.lastOutputTick : 0;
-            d.states.add(new PatternState(pt.id, remainingRuns, inMachines,
-                    (int) Math.min(Integer.MAX_VALUE, since), machines,
-                    otherCpuFirst ? cpuName(servedBy) : null));
-
-            for (var o : pt.details.getOutputs()) if (o != null) keys.add(o.what());
-            for (var in : pt.details.getInputs()) {
-                var poss = in.getPossibleInputs();
-                if (poss.length > 0) keys.add(poss[0].what());
-            }
-        }
-
-        var all = new KeyCounter();
-        logic.getAllItems(all);
-        for (var e : all) keys.add(e.getKey());
-        if (d.finalOutput != null) keys.add(d.finalOutput.what());
-
-        for (var k : keys) {
-            d.keys.add(new KeyState(k, logic.getStored(k), logic.getWaitingFor(k), logic.getPendingOutputs(k)));
-        }
-
-        d.events = jt.eventsSince(sub.eventSeq);
-        sub.eventSeq = jt.lastSeq();
-        sub.logState("job running, " + jt.patterns.size() + " pattern(s), output "
-                + (d.finalOutput != null ? d.finalOutput.what().getId() : "?"));
-        return d;
-    }
-
-    /** Mirrors AE2's CraftingService.insertIntoCpus: returned items go to the first CPU (in its set order) waiting. */
-    @org.jetbrains.annotations.Nullable
-    private static CraftingCPUCluster firstWaitingCpu(CraftingCPUCluster self, AEKey key) {
-        var grid = self.getGrid();
-        if (grid == null || !(grid.getCraftingService() instanceof CraftingService cs)) return null;
-        for (var c : ((dev.ae2lattice.mixin.CraftingServiceAccessor) (Object) cs).ae2lattice$getCpus()) {
-            if (c.craftingLogic.getWaitingFor(key) > 0) return c;
-        }
-        return null;
-    }
-
-    private static net.minecraft.network.chat.Component cpuName(CraftingCPUCluster c) {
-        var n = c.getName();
-        return n != null ? n : net.minecraft.network.chat.Component.literal("another CPU");
-    }
-
-    /**
-     * Is the machine's current work this step's? Compares the machine's own current recipe outputs (GregTech) or
-     * current input item (furnace) with this pattern. UNKNOWN if the machine doesn't tell us.
-     */
-    private static SnapshotData.Target targetOf(PatternTrack pt, MachineProbe.Reading r) {
-        if (!r.making().isEmpty()) {
-            for (var o : pt.details.getOutputs()) {
-                if (o != null && o.what() instanceof AEItemKey ik && r.making().contains(ik.getItem())) {
-                    return SnapshotData.Target.THIS_STEP;
+                returned=JobTrack.returnedCount(cpu,out);
+                JobTrack.Dispatch dispatch=JobTrack.latest(cpu,pattern);
+                if(dispatch!=null){
+                    dispatched=dispatch.count;destinations=dispatch.destinations.size();
+                    provider="Accepted "+dispatch.count+"x";
+                    if(destinations>0)route="Last push: "+destinations+(dispatch.partial?"+":"")+" receiving tiles";
+                    if(dispatch.provider!=null) provider+=" at "+dispatch.provider.getCustomName();
                 }
-            }
-            return SnapshotData.Target.OTHER;
-        }
-        if (r.consuming() != null) {
-            for (var in : pt.details.getInputs()) {
-                for (var poss : in.getPossibleInputs()) {
-                    if (poss.what() instanceof AEItemKey ik && ik.getItem() == r.consuming()) {
-                        return SnapshotData.Target.THIS_STEP;
+                if((active>0 || pending>0) && probes<PROBE_LIMIT){
+                    probes++;
+                    // Prefer the last accepting provider. The adjacent machine remains a candidate.
+                    NamedDimensionalCoord coord=dispatch==null?null:dispatch.provider;
+                    if(coord==null){
+                        List<NamedDimensionalCoord> candidates=cpu.getProviders(out);
+                        if(candidates!=null && !candidates.isEmpty()){
+                            if(!provider.isEmpty())provider+=" / ";
+                            provider+="Candidate: "+candidates.get(0).getCustomName()+
+                                (candidates.size()>1?" (+"+(candidates.size()-1)+")":"");
+                            if(candidates.size()==1)coord=candidates.get(0);
+                        }
+                    }
+                    {
+                        MachineResolver.Result resolved=MachineResolver.resolve(dispatch,coord,cpu.getGrid(),player,budget);
+                        if(resolved!=null){
+                            MachineReading reading=resolved.reading;
+                            route=resolved.route;
+                            provider+=" / "+reading.state;progress=reading.progress;max=reading.max;machine=reading.machine;
+                            if(JobTrack.shared(cpu,pattern,dispatch,machine)){
+                                route="Shared receiver: progress not attributed";progress=-1;max=-1;
+                            }
+                        }
                     }
                 }
             }
-            return SnapshotData.Target.OTHER;
+            nodes.add(new Snapshot.Node(label,reason,provider,runs,stored,active,pending,progress,max,id,damage,edges,machine,dispatched,returned,destinations,route,external,
+                describe(pattern.getCondensedAEInputs()),describe(pattern.getCondensedAEOutputs()),fluidName,recipeSafe,new Snapshot.Details(tag,preview(pattern.getCondensedAEInputs()),preview(pattern.getCondensedAEOutputs()))));
         }
-        return SnapshotData.Target.UNKNOWN;
+        IAEStack<?> output=cpu.getFinalMultiOutput();
+        JobTrack.observeOutput(cpu,output);
+        return new Snapshot(window,nonce,cpu.getName(),output==null?"":output.getDisplayName(),
+            cpu.isSuspended()?"Suspended":"Crafting",cpu.getElapsedTime(),cpu.getStartItemCount(),
+            cpu.getRemainingItemCount(),truncated,nodes,page,count);
     }
-
-    private static PatternInfo describe(PatternTrack pt) {
-        List<GenericStack> outs = new ArrayList<>();
-        for (var o : pt.details.getOutputs()) if (o != null) outs.add(o);
-        List<GenericStack> ins = new ArrayList<>();
-        for (var in : pt.details.getInputs()) {
-            var poss = in.getPossibleInputs();
-            if (poss.length == 0) continue;
-            ins.add(new GenericStack(poss[0].what(), poss[0].amount() * in.getMultiplier()));
-        }
-        return new PatternInfo(pt.id, outs, ins);
-    }
-
-    /**
-     * Steps whose runs were all handed out before we started watching (e.g. after a restart) are no longer in
-     * AE2's task list and were never seen being pushed. But if AE2 is still waiting for their output, they're
-     * clearly part of this job - ask AE2 which pattern makes that item.
-     */
-    private static void recoverUnseenSteps(CraftingCPUCluster cpu, JobTrack jt) {
-        var waiting = new java.util.HashSet<AEKey>();
-        cpu.craftingLogic.getAllWaitingFor(waiting);
-        if (waiting.isEmpty()) return;
-        var grid = cpu.getGrid();
-        if (grid == null || !(grid.getCraftingService() instanceof CraftingService cs)) return;
-        for (var key : waiting) {
-            boolean known = false;
-            for (var pt : jt.patterns.values()) {
-                if (pt.produces(key)) {
-                    known = true;
-                    break;
-                }
-            }
-            if (known) continue;
-            for (var pattern : cs.getCraftingFor(key)) {
-                jt.track(pattern);
-                break;
+    private static List<Snapshot.Slot> preview(IAEStack<?>[] stacks){
+        List<Snapshot.Slot> result=new ArrayList<>();
+        for(IAEStack<?> stack:stacks){
+            if(stack==null || stack.getStackSize()<=0)continue;
+            if(result.size()>=Snapshot.MAX_SLOTS)break;
+            if(stack instanceof IAEFluidStack){
+                IAEFluidStack fluid=(IAEFluidStack)stack;
+                if(fluid.getFluid()!=null)result.add(new Snapshot.Slot(-1,0,stack.getStackSize(),0,fluid.getFluid().getName()));
+            }else{
+                ItemStack item=stack.getItemStackForNEI();
+                if(item!=null)result.add(new Snapshot.Slot(Item.getIdFromItem(item.getItem()),item.getItemDamage(),stack.getStackSize(),0,""));
             }
         }
+        return result;
     }
-
-    /** Before a pattern has ever been pushed we can still show where it *would* go. */
-    private static void scanProviders(CraftingCPUCluster cpu, PatternTrack pt) {
-        var grid = cpu.getGrid();
-        if (grid == null || !(grid.getCraftingService() instanceof CraftingService cs)) return;
-        int n = 0;
-        for (var provider : cs.getProviders(pt.details)) {
-            for (var t : MachineResolver.resolve(provider)) pt.addMachine(t, provider, false);
-            if (++n >= 4) break;
+    private static String describe(IAEStack<?>[] stacks){
+        StringBuilder result=new StringBuilder();
+        for(IAEStack<?> s:stacks){
+            if(s==null)continue;
+            String entry=s.getStackSize()+"x "+s.getDisplayName();
+            if(result.length()+entry.length()+2>60){
+                if(result.length()==0)result.append(entry.substring(0,Math.min(60,entry.length())));
+                result.append(" ...");break;
+            }
+            if(result.length()>0)result.append("; ");
+            result.append(entry);
         }
+        return result.toString();
     }
-
-    private SnapshotBuilder() {}
+    private static IAEStack<?> key(IAEStack<?> stack){
+        IAEStack<?> copy=stack.copy();copy.setStackSize(1);return copy;
+    }
+    private static IAEStack<?> first(IAEStack<?>[] stacks){
+        for(IAEStack<?> s:stacks) if(s!=null)return s;return null;
+    }
 }
